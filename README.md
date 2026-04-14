@@ -16,11 +16,12 @@
 6. [Pipeline — Stage by Stage](#6-pipeline--stage-by-stage)
 7. [Technology Stack](#7-technology-stack)
 8. [Evaluation Metrics](#8-evaluation-metrics)
-9. [Project Structure](#9-project-structure)
-10. [Implementation Plan](#10-implementation-plan)
-11. [Work Division](#11-work-division)
-12. [Setup & Installation](#12-setup--installation)
-13. [References](#13-references)
+9. [Bias and Fairness (Course Requirement)](#9-bias-and-fairness-course-requirement)
+10. [Project Structure](#10-project-structure)
+11. [Implementation Plan](#11-implementation-plan)
+12. [Work Division](#12-work-division)
+13. [Setup & Installation](#13-setup--installation)
+14. [References](#14-references)
 
 ---
 
@@ -52,11 +53,11 @@ Two stages use the **Groq LLM API (Llama 3.1 8B)** where language understanding 
 
 ## 2. Problem Statement
 
-Three core challenges motivate this project:
+The course project description frames **three core challenges** (see project brief). We align with them as follows:
 
-1. **Unstructured text → structured representation**: Resumes are noisy and use varied vocabulary to describe the same skills. Rule-based NER misses domain-specific terms.
-2. **High-dimensional, sparse skill distributions**: Skill sets across candidates are wide and sparse — standard bag-of-words models struggle here.
-3. **Limited interpretability**: Single-model pipelines produce a scalar score with no explanation of what drove it or what skills are missing.
+1. **Structuring unstructured data**: Resumes are noisy and use varied vocabulary to describe the same skills. Rule-based NER misses domain-specific terms. We convert text into **structured skill JSON** (LLM) and **dense embeddings** (SBERT) for downstream mining.
+2. **High-dimensional, sparse skill distributions**: Skill sets across candidates are wide and sparse — standard bag-of-words models struggle here. We use **SBERT**, **clustering**, and **association rules** to analyze structure without relying on a single sparse bag-of-words view alone.
+3. **Bias in evaluation signals**: Automated screening can reflect **dataset imbalance**, **keyword priors**, or **uneven error across groups**. The public resume dataset does **not** include protected attributes (e.g. gender, race); we cannot measure demographic fairness directly. We **mitigate and report** what we can: **stratified train/val/test splits**, **class-weighted** classifiers where applicable, **per-class F1** and **disparity metrics** (spread of F1 across job categories), plus an explicit **limitations / ethics** discussion in the final report. **Interpretability** (association rules, LLM match reasons) complements scalar scores.
 
 ---
 
@@ -226,8 +227,7 @@ Saved to `skill_lists.json` and `embeddings.npy`
 - **Baseline:** TF-IDF → SVM or Logistic Regression
 - **Agent version:** SBERT embeddings → RBF-kernel SVM and Random Forest
 
-Both trained on 70% split, evaluated on 15% test split with class-weight balancing.
-**Output:** Predicted job category per resume
+Both trained on the **70% train** split, evaluated on the **15% test** split. Use **stratified** splitting so all categories appear in train/val/test. Prefer **`class_weight='balanced'`** (or equivalent) for models that support it, to reduce sensitivity to mild class imbalance. **Output:** Predicted job category per resume, plus **per-class F1** and **disparity summary** (min/max F1 across categories) via [`evaluation/metrics.py`](evaluation/metrics.py) for the report.
 
 ---
 
@@ -257,7 +257,7 @@ Both trained on 70% split, evaluated on 15% test split with class-weight balanci
 | Clustering | `scikit-learn` (K-Means) | |
 | Association rule mining | `mlxtend` | Apriori + FP-Growth |
 | Classification | `scikit-learn` | SVM, Random Forest, Logistic Regression |
-| Evaluation | `scikit-learn` metrics | accuracy, macro-F1, Precision@K |
+| Evaluation | `scikit-learn` + project helpers | accuracy, macro-F1, per-class F1, disparity, Precision@K |
 | Caching | `json` + `os` | Saves LLM results between Colab sessions |
 | Environment | Google Colab | Free tier sufficient |
 | Version control | GitHub | |
@@ -274,6 +274,7 @@ Both trained on 70% split, evaluated on 15% test split with class-weight balanci
 | Accuracy | Classification Agent | Overall correctness across 24 categories |
 | Macro-F1 | Classification Agent | Primary metric — handles class imbalance fairly |
 | Per-class F1 | Classification Agent | Identifies which categories are hardest |
+| F1 gap / disparity | Classification Agent | Max − min per-class F1 across categories — surfaces uneven performance (see §9) |
 | Silhouette Score | Clustering Agent | Cluster quality, used to select k |
 | Support / Confidence / Lift | ARM Agent | Rule quality and interestingness |
 | Precision@K (K=5, 10) | Job Matching Agent | Ranking quality |
@@ -283,7 +284,19 @@ Both trained on 70% split, evaluated on 15% test split with class-weight balanci
 
 ---
 
-## 9. Project Structure
+## 9. Bias and Fairness 
+
+The original project description lists **detecting and mitigating bias in extracted evaluation signals** as a core challenge. Our approach:
+
+- **Mitigation (engineering):** **Proxy term filter in Stage 2** strips demographic signals (university names, club affiliations, geographic identifiers) from extracted skill lists before they reach any downstream agent — implemented as `filter_proxy_skills()` in `skill_extraction_agent.py`. Stratified splits; class-weighted classification; transparent reporting of failures (confusion matrix, per-class F1). LLM outputs are treated as **assistive**; document temperature and caching behavior.
+- **Analysis (reporting):** Report **per-class F1** and **disparity** (spread of F1 across the 24 job categories). A large gap between the best- and worst-served categories indicates **uneven reliability** of the system across labels — this is the main quantitative handle available without demographic fields.
+- **Limitations:** We do **not** claim demographic fairness. Resume text can encode indirect cues; models may inherit dataset biases. Discuss limitations and cite relevant literature (e.g. README references on selection bias).
+
+Implement disparity helpers alongside classification metrics in [`evaluation/metrics.py`](evaluation/metrics.py) (`compute_disparity_metrics`, `compute_classification_and_disparity`). Export tables to [`evaluation/results/`](evaluation/results/) for the final report.
+
+---
+
+## 10. Project Structure
 
 ```
 project/
@@ -321,6 +334,7 @@ project/
 │   ├── metrics.py
 │   └── results/
 │       ├── classification_report.csv
+│       ├── per_class_f1_disparity.csv   # Per-class F1 + disparity summary for report
 │       └── association_rules.csv
 │
 └── report/
@@ -329,7 +343,7 @@ project/
 
 ---
 
-## 10. Implementation Plan
+## 11. Implementation Plan
 
 ### Week 1 — Foundation
 **Goal:** Preprocessing done, skill lists and embeddings generated. Everything else depends on this.
@@ -363,12 +377,12 @@ project/
 | Task | Owner |
 |---|---|
 | Connect all agents into `06_full_pipeline.ipynb` | Tyler |
-| Run full evaluation — accuracy, macro-F1, Precision@K | Ishansh |
-| Final report writing | All |
+| Run full evaluation — accuracy, macro-F1, Precision@K, **per-class F1 + disparity** | Ishansh |
+| Final report writing — include **bias/limitations** subsection (course challenge 3) | All |
 
 ---
 
-## 11. Work Division
+## 12. Work Division
 
 | Member | Responsibility |
 |---|---|
@@ -382,7 +396,7 @@ project/
 
 ---
 
-## 12. Setup & Installation
+## 13. Setup & Installation
 
 ### Install All Dependencies
 ```python
@@ -517,7 +531,7 @@ def match_candidates(jd_text, jd_embedding, resumes, resume_embeddings, k=10):
 
 ---
 
-## 13. References
+## 14. References
 
 1. Daryani, C., et al. 2020. An automated resume screening system using NLP and similarity. *Topics in Intelligent Computing and Industry Design*, 2(2), 99–103.
 
