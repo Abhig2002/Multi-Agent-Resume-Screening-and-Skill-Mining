@@ -4,7 +4,12 @@ scikit-learn
 spacy
 nltk
 sentence-transformers
+transformers
+torch
+accelerate
 groq
+python-dotenv
 mlxtend
 matplotlib
 seaborn
+tqdm

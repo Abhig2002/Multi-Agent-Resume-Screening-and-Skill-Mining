@@ -31,7 +31,7 @@ Traditional resume screening relies on keyword matching and single-model scoring
 
 This project builds a **Multi-Agent Resume Screening & Skill Mining System** — a six-stage pipeline where each agent handles exactly one task. The novelty is the **multi-agent architecture**: separating skill extraction, clustering, association mining, classification, and job matching into independent components rather than forcing one model to do everything.
 
-Two stages use the **Groq LLM API (Llama 3.1 8B)** where language understanding genuinely improves results over rule-based approaches. All other stages use classical data mining methods (K-Means, Apriori, SVM/Random Forest). The full system is evaluated against a plain TF-IDF single-model baseline.
+Two stages use an **LLM (Llama 3.1 8B Instruct)** where language understanding genuinely improves results over rule-based approaches. All other stages use classical data mining methods (K-Means, Apriori, SVM/Random Forest). The full system is evaluated against a plain TF-IDF single-model baseline.
 
 ### Why Only Two LLM Stages?
 
@@ -41,13 +41,14 @@ Two stages use the **Groq LLM API (Llama 3.1 8B)** where language understanding 
 | Job Matching | ✅ Yes | Cosine similarity shortlists candidates; LLM explains *why* they fit |
 | Clustering, ARM, Classification | ❌ No | These operate on structured data — LLMs add no value here |
 
-### Why Groq?
+### LLM Backend — Two Options
 
-- Completely **free** tier (no credit card required)
-- Fastest inference of any free LLM API
-- Simple API, nearly identical to OpenAI's format
-- Disk caching handles rate limits and Colab session crashes
-- Llama 3.1 8B is sufficient for structured JSON extraction tasks
+The pipeline supports two interchangeable backends for the LLM stages, selected via `--llm-provider`:
+
+| Backend | Flag | Model | Notes |
+|---|---|---|---|
+| **HuggingFace** (default) | `--llm-provider huggingface` | `meta-llama/Meta-Llama-3.1-8B-Instruct` | Runs locally, no rate limits, needs HF token + GPU recommended |
+| **Groq API** | `--llm-provider groq` | `llama-3.1-8b-instant` | Cloud API, free tier (6K TPM), needs `GROQ_API_KEY` |
 
 ---
 
@@ -117,13 +118,18 @@ Raw Resumes (Dataset 1)          Job Descriptions (Dataset 2)
                        |
                        v
 +--------------------------------------------------+
-|        Skill Extraction Agent  [GROQ LLM]        |
+|           Skill Extraction Agent  [LLM]         |
 |                                                  |
-|  - Groq API (Llama 3.1 8B Instant)               |
-|  - Prompt: resume text -> JSON skill list        |
+|  Option A (default): HuggingFace local           |
+|    meta-llama/Meta-Llama-3.1-8B-Instruct         |
+|  Option B: Groq API (llama-3.1-8b-instant)       |
+|                                                  |
+|  - Instruct chat template (system + user)        |
+|  - Strict skill filtering + deduplication        |
 |  - Output: {"technical": [...], "soft": [...]}   |
-|  - Results cached to disk to survive crashes     |
-|  - SBERT embeddings also generated here          |
+|  - Atomic JSON cache, saved every 10 rows        |
+|  - tqdm progress bar; Ctrl-C saves and exits     |
+|  - SBERT embeddings generated here              |
 |                                                  |
 +----------+---------------------------------------+
            |
@@ -148,15 +154,15 @@ Raw Resumes (Dataset 1)          Job Descriptions (Dataset 2)
                        |
                        v
 +--------------------------------------------------+
-|          Job Matching Agent  [GROQ LLM]          |
+|          Job Matching Agent  [LLM]              |
 |                                                  |
 |  Step 1: SBERT cosine similarity -> top-10 list  |
-|  Step 2: Groq LLM reranks + explains fit         |
+|  Step 2: LLM reranks + explains fit             |
 |  Output: {"score": 8, "reason": "..."}           |
 |                                                  |
 +--------------------------------------------------+
 
-[GROQ LLM] = Groq API with Llama 3.1 8B Instant (free tier)
+[LLM] = HuggingFace local (default) or Groq API -- switchable via --llm-provider
 ```
 
 ### Agent Summary
@@ -183,18 +189,21 @@ Raw Resumes (Dataset 1)          Job Descriptions (Dataset 2)
 ---
 
 ### Stage 2 — Skill Extraction Agent ⭐ LLM
-**Type:** Groq API call (Llama 3.1 8B)
-**Input:** Clean resume text
+**Type:** LLM — HuggingFace (local) or Groq API, switchable via `--llm-provider`
+**Default model:** `meta-llama/Meta-Llama-3.1-8B-Instruct` (requires HF token + license acceptance)
+**Input:** Clean resume text (`clean_resumes.csv`)
 **What it does:**
-- Sends each resume to Groq with a zero-temperature JSON prompt
-- Returns structured skill lists per resume
-- Caches results to disk after every call — Colab crashes don't lose progress
-- Also generates SBERT embeddings (`all-MiniLM-L6-v2`) for all downstream agents
+- Uses instruct chat template (system + user messages) for structured JSON output
+- Applies strict skill filtering: 1–5 word limit per skill, soft-skill denylist, proxy-term removal, deduplication, capped list sizes
+- Atomic JSON cache written every 10 rows — crashes lose at most 10 entries
+- `tqdm` progress bar shows speed, cached count, and per-resume skill counts
+- Ctrl+C / SIGTERM handler saves cache before exiting — just re-run to continue
+- SBERT embeddings (`all-MiniLM-L6-v2`) generated in the same stage
 
 **Output:**
 ```json
 {
-  "technical": ["Python", "SQL", "Kubernetes", "dbt"],
+  "technical": ["python", "sql", "kubernetes", "dbt"],
   "soft": ["leadership", "stakeholder management"]
 }
 ```
@@ -251,19 +260,21 @@ Both trained on the **70% train** split, evaluated on the **15% test** split. Us
 
 | Component | Library / Tool | Notes |
 |---|---|---|
-| Text preprocessing | `nltk`, `spaCy` | `en_core_web_sm` model |
-| Embeddings | `sentence-transformers` | `all-MiniLM-L6-v2` |
-| LLM API | `groq` | Llama 3.1 8B Instant — free, no credit card |
-| Clustering | `scikit-learn` (K-Means) | |
-| Association rule mining | `mlxtend` | Apriori + FP-Growth |
-| Classification | `scikit-learn` | SVM, Random Forest, Logistic Regression |
-| Evaluation | `scikit-learn` + project helpers | accuracy, macro-F1, per-class F1, disparity, Precision@K |
-| Caching | `json` + `os` | Saves LLM results between Colab sessions |
-| Environment | Google Colab | Free tier sufficient |
+| Text preprocessing | nltk, spaCy | en_core_web_sm model |
+| Embeddings | sentence-transformers | all-MiniLM-L6-v2 |
+| LLM local (default) | transformers, torch, accelerate | meta-llama/Meta-Llama-3.1-8B-Instruct; GPU recommended |
+| LLM cloud (alternative) | groq | llama-3.1-8b-instant; free tier, 6K TPM |
+| Clustering | scikit-learn (K-Means) | |
+| Association rule mining | mlxtend | Apriori + FP-Growth |
+| Classification | scikit-learn | SVM, Random Forest, Logistic Regression |
+| Evaluation | scikit-learn + project helpers | accuracy, macro-F1, per-class F1, disparity, Precision@K |
+| Progress + CLI | tqdm, argparse | Live progress bar, resumable runs |
+| Caching | json + atomic os.replace | Crash-safe; saves every 10 rows |
+| Environment vars | python-dotenv | GROQ_API_KEY, HF_TOKEN in .env |
 | Version control | GitHub | |
 | Communication | Discord | |
 
-> **No fine-tuning. No local GPU. No paid APIs required.**
+> **No fine-tuning required. GPU recommended for local HF inference but not mandatory.**
 
 ---
 
@@ -398,138 +409,73 @@ project/
 
 ## 13. Setup & Installation
 
-### Install All Dependencies
-```python
-# NLP + embeddings
-!pip install spacy nltk sentence-transformers
-!python -m spacy download en_core_web_sm
-
-# LLM API (free)
-!pip install groq
-
-# Data mining
-!pip install mlxtend
-
-# Standard ML
-!pip install scikit-learn pandas numpy matplotlib seaborn
+### 1. Clone the repo and create a virtual environment
+```bash
+git clone <repo-url>
+cd CSE572_Project
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
 ```
 
-### Groq API Setup
-1. Go to [console.groq.com](https://console.groq.com) — free account, no credit card
-2. Generate an API key
-3. Store it:
-```python
-GROQ_API_KEY = "your_key_here"
+### 2. Install all dependencies
+```bash
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
 ```
 
----
-
-### Skill Extraction Agent
-```python
-import json, os, time
-from groq import Groq
-
-client = Groq(api_key=GROQ_API_KEY)
-
-def extract_skills(resume_text: str) -> dict:
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[{
-            "role": "user",
-            "content": f"""Extract all technical and soft skills from this resume.
-Return ONLY valid JSON with this exact format, nothing else:
-{{"technical": ["skill1", "skill2"], "soft": ["skill3"]}}
-
-Resume:
-{resume_text[:2000]}"""
-        }],
-        temperature=0.1
-    )
-    try:
-        return json.loads(response.choices[0].message.content)
-    except json.JSONDecodeError:
-        return {"technical": [], "soft": []}
-
-
-def extract_skills_cached(resume_id, resume_text,
-                          cache_path="data/processed/skill_lists.json"):
-    cache = {}
-    if os.path.exists(cache_path):
-        with open(cache_path) as f:
-            cache = json.load(f)
-    if str(resume_id) in cache:
-        return cache[str(resume_id)]
-    skills = extract_skills(resume_text)
-    cache[str(resume_id)] = skills
-    with open(cache_path, "w") as f:
-        json.dump(cache, f)
-    time.sleep(0.5)
-    return skills
+### 3. Configure API keys
+Copy the example env file and fill in your keys:
+```bash
+cp .env.example .env
+```
+Edit :
+```
+GROQ_API_KEY=gsk_...          # only needed for --llm-provider groq
+HF_TOKEN=hf_...               # only needed for gated HF models (e.g. Llama 3.1)
 ```
 
----
+- **Groq key**: [console.groq.com](https://console.groq.com) — free, no credit card
+- **HF token**: [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) — Read role
 
-### SBERT Embeddings
-```python
-from sentence_transformers import SentenceTransformer
-import numpy as np
+For Llama 3.1 you must also accept the license at:
+[huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct)
 
-sbert = SentenceTransformer('all-MiniLM-L6-v2')
+### 4. Download datasets
+Place the raw files in :
+-  from [Kaggle — Resume Dataset](https://www.kaggle.com/datasets/snehaanbhawal/resume-dataset)
+-  from [Kaggle — Job Descriptions 2025](https://www.kaggle.com/datasets/adityarajsrv/job-descriptions-2025-tech-and-non-tech-roles)
 
-def embed_in_batches(texts, batch_size=64):
-    embeddings = []
-    for i in range(0, len(texts), batch_size):
-        embeddings.append(sbert.encode(texts[i:i+batch_size]))
-    return np.vstack(embeddings)
+### 5. Run the pipeline
 
-resume_embeddings = embed_in_batches(clean_resumes)
-np.save('data/processed/embeddings.npy', resume_embeddings)
+**Week 1 — preprocessing + skill extraction (HuggingFace, default):**
+```bash
+python run_pipeline.py --stage week1 --llm-provider huggingface
 ```
 
----
-
-### Job Matching Agent
-```python
-from sklearn.metrics.pairwise import cosine_similarity
-
-def get_shortlist(jd_embedding, resume_embeddings, k=10):
-    scores = cosine_similarity([jd_embedding], resume_embeddings)[0]
-    return np.argsort(scores)[::-1][:k]
-
-def explain_match(resume_text: str, jd_text: str) -> dict:
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[{
-            "role": "user",
-            "content": f"""Rate this candidate's fit for the job on a scale of 1-10.
-Return ONLY valid JSON with this exact format, nothing else:
-{{"score": 8, "reason": "One concise sentence explaining the score."}}
-
-Job Description:
-{jd_text[:500]}
-
-Resume:
-{resume_text[:1000]}"""
-        }],
-        temperature=0.1
-    )
-    try:
-        return json.loads(response.choices[0].message.content)
-    except json.JSONDecodeError:
-        return {"score": 0, "reason": "Scoring unavailable"}
-
-def match_candidates(jd_text, jd_embedding, resumes, resume_embeddings, k=10):
-    top_k_indices = get_shortlist(jd_embedding, resume_embeddings, k)
-    results = []
-    for idx in top_k_indices:
-        match = explain_match(resumes[idx], jd_text)
-        match["resume_id"] = int(idx)
-        results.append(match)
-        time.sleep(0.5)
-    return sorted(results, key=lambda x: x["score"], reverse=True)
+**Or use Groq API instead:**
+```bash
+python run_pipeline.py --stage week1 --llm-provider groq
 ```
 
----
+**If the run is interrupted, just re-run the same command — it resumes from the cache automatically.**
+
+**Preprocessing only:**
+```bash
+python run_pipeline.py --stage preprocess
+```
+
+**Skill extraction only (skip preprocessing):**
+```bash
+python run_pipeline.py --stage skills --llm-provider huggingface
+```
+
+**Quick test on 10 resumes:**
+```bash
+python run_pipeline.py --stage week1 --llm-provider huggingface --sample-size 10
+```
 
 ## 14. References
 
