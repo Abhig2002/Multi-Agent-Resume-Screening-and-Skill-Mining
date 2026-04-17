@@ -95,16 +95,36 @@ def load_hf_model(model_name: str):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
-    tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=dtype,
-        device_map="auto",
-        token=hf_token,
-    )
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map="auto",
+            token=hf_token,
+        )
+    except Exception as err:
+        _print_hf_403_help(str(err))
+        raise
     model.eval()
     print(f"Model loaded on {device}")
     return tokenizer, model
+
+
+def _print_hf_403_help(err_text: str) -> None:
+    """Explain common 403 / gated-repo failures (fine-grained token scope)."""
+    low = err_text.lower()
+    if "403" not in low and "forbidden" not in low and "gated" not in low:
+        return
+    print(
+        "\n"
+        "Hugging Face blocked this download (403). For gated models (e.g. Meta Llama):\n"
+        "  1. Open the model page on huggingface.co and click to accept the license.\n"
+        "  2. If your token is FINE-GRAINED: huggingface.co/settings/tokens → edit the token →\n"
+        "     turn ON 'Access to public gated repositories' (or create a Classic Read token).\n"
+        "  3. Or skip Llama and use an open model, e.g.:\n"
+        "     --hf-model-name Qwen/Qwen2.5-3B-Instruct\n"
+    )
 
 
 # ---------------------------------------------------------------------------
