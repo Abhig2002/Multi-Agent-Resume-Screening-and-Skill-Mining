@@ -29,7 +29,6 @@ OUT_CLEAN_JD_PATH = PROCESSED_DIR / "clean_jds.csv"
 def setup_nlp():
     """Download NLTK resources and return lemmatizer + stopwords."""
     nltk.download("stopwords", quiet=True)
-    nltk.download("punkt", quiet=True)
     nltk.download("wordnet", quiet=True)
     nltk.download("omw-1.4", quiet=True)
     lemmatizer = WordNetLemmatizer()
@@ -63,7 +62,9 @@ def clean_text(text, lemmatizer, stop_words):
     if not text:
         return ""
 
-    tokens = nltk.word_tokenize(text)
+    # Whitespace split only — normalize_text already strips non-letters, so we do not
+    # need punkt / punkt_tab (NLTK 3.9+ moved tokenizer data and breaks old setups).
+    tokens = text.split()
     tokens = [
         lemmatizer.lemmatize(t)
         for t in tokens
