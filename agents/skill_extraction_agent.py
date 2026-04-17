@@ -56,7 +56,7 @@ GROQ_MODEL = "llama-3.1-8b-instant"
 GROQ_SLEEP = 10.0          # safe pacing for 6K TPM free tier (~1 req/10s)
 SBERT_MODEL_NAME = "all-MiniLM-L6-v2"
 HF_MODEL_NAME = os.environ.get("HF_MODEL_ID", "meta-llama/Llama-3.1-8B-Instruct")
-PROMPT_CHAR_LIMIT = 1000   # shorter = fewer tokens = faster + cheaper
+PROMPT_CHAR_LIMIT = 4000   # ~1000 resume tokens; covers ~64% of resumes fully (no API cost with HF)
 CACHE_SAVE_EVERY = 10      # flush cache to disk every N processed rows
 
 load_dotenv(ROOT / ".env")
