@@ -4,8 +4,6 @@ Project entrypoint (template)
 Use this script to run stages quickly from the repo root.
 """
 
-from __future__ import annotations
-
 import argparse
 
 from agents.preprocessing_agent import run as run_preprocessing

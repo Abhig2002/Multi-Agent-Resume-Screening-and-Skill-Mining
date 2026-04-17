@@ -13,8 +13,6 @@ HuggingFace path improvements:
   - Cache written every N rows (not per-row) to reduce disk IO
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import os
@@ -24,7 +22,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
@@ -130,7 +128,7 @@ def build_user_message(resume_text: str) -> str:
     )
 
 
-def build_chat_messages(resume_text: str) -> list[dict]:
+def build_chat_messages(resume_text: str) -> List[Dict]:
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user",   "content": build_user_message(resume_text)},
@@ -148,7 +146,7 @@ def _extract_json_block(raw: str) -> str:
     return match.group(0) if match else raw
 
 
-def parse_skill_json(raw: str) -> dict[str, list[str]]:
+def parse_skill_json(raw: str) -> Dict[str, List[str]]:
     candidate = _extract_json_block(raw)
     try:
         data = json.loads(candidate)
@@ -203,7 +201,7 @@ def _keep_soft(item: str) -> bool:
     return not any(frag in text for frag in _BLOCKED_FRAGMENTS)
 
 
-def clean_skills(skills: dict[str, list[str]]) -> dict[str, list[str]]:
+def clean_skills(skills: Dict[str, List[str]]) -> Dict[str, List[str]]:
     """Normalize, filter noise, deduplicate, cap list sizes."""
     technical = sorted({_normalize(x) for x in skills.get("technical", []) if _keep_technical(x)})
     soft = sorted({_normalize(x) for x in skills.get("soft", []) if _keep_soft(x)})
@@ -217,14 +215,14 @@ def clean_skills(skills: dict[str, list[str]]) -> dict[str, list[str]]:
 # Cache helpers
 # ---------------------------------------------------------------------------
 
-def load_cache(path: Path) -> dict[str, Any]:
+def load_cache(path: Path) -> Dict[str, Any]:
     if path.exists():
         with path.open("r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
-def save_cache(path: Path, payload: dict[str, Any]) -> None:
+def save_cache(path: Path, payload: Dict[str, Any]) -> None:
     """Atomic write: write to a temp file then rename, so a crash mid-write
     never corrupts the existing cache file."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,8 +240,8 @@ def save_cache(path: Path, payload: dict[str, Any]) -> None:
 # Extractors
 # ---------------------------------------------------------------------------
 
-def _groq_extractor(client) -> Callable[[str], dict[str, list[str]]]:
-    def extract(resume_text: str) -> dict[str, list[str]]:
+def _groq_extractor(client) -> Callable[[str], Dict[str, List[str]]]:
+    def extract(resume_text: str) -> Dict[str, List[str]]:
         response = client.chat.completions.create(
             model=GROQ_MODEL,
             messages=build_chat_messages(resume_text),
@@ -254,13 +252,13 @@ def _groq_extractor(client) -> Callable[[str], dict[str, list[str]]]:
     return extract
 
 
-def _hf_extractor(tokenizer, model, max_new_tokens: int) -> Callable[[str], dict[str, list[str]]]:
+def _hf_extractor(tokenizer, model, max_new_tokens: int) -> Callable[[str], Dict[str, List[str]]]:
     """
     Single-resume extractor using instruct chat template.
     """
     device = next(model.parameters()).device
 
-    def extract(resume_text: str) -> dict[str, list[str]]:
+    def extract(resume_text: str) -> Dict[str, List[str]]:
         messages = build_chat_messages(resume_text)
         # apply_chat_template formats messages correctly for the instruct model
         prompt = tokenizer.apply_chat_template(
@@ -289,7 +287,7 @@ def _hf_extractor(tokenizer, model, max_new_tokens: int) -> Callable[[str], dict
 # SBERT embeddings
 # ---------------------------------------------------------------------------
 
-def generate_embeddings(texts: list[str], batch_size: int = 64) -> np.ndarray:
+def generate_embeddings(texts: List[str], batch_size: int = 64) -> np.ndarray:
     """Generate SBERT embeddings in batches with a tqdm progress bar."""
     model = SentenceTransformer(SBERT_MODEL_NAME)
     all_batches = []
@@ -307,7 +305,7 @@ def generate_embeddings(texts: list[str], batch_size: int = 64) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def run(
-    sample_size: int | None = None,
+    sample_size: Optional[int] = None,
     skip_llm: bool = False,
     llm_provider: str = "groq",
     hf_model_name: str = HF_MODEL_NAME,

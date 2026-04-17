@@ -1,13 +1,12 @@
 pandas
 numpy
 scikit-learn
-spacy
 nltk
 sentence-transformers
 transformers
 torch
 accelerate
-groq
+groq; python_version >= "3.7"
 python-dotenv
 mlxtend
 matplotlib

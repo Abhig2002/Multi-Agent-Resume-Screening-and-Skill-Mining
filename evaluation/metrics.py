@@ -4,8 +4,6 @@ Evaluation helpers (template)
 Shared metric functions for Stage 5 and Stage 6.
 """
 
-from __future__ import annotations
-
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, classification_report, f1_score

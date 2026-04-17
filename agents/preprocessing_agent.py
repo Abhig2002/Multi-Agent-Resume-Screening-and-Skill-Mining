@@ -1,25 +1,19 @@
 """
-Stage 1 - Preprocessing Agent (Template)
-========================================
-Fast scaffold so you can learn-by-implementing.
-
-What this file gives you:
-- End-to-end runnable skeleton for cleaning resume + job description text
-- Small sample run mode (`--sample-size`) for quick iteration
-- Clear TODO markers where you can customize behavior
+Stage 1 - Preprocessing Agent
+==============================
+Cleans resume and job description text using NLTK only (no spaCy dependency).
+Compatible with Python 3.6+.
 """
-
-from __future__ import annotations
 
 import argparse
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List, Optional, Set
 
 import nltk
 import pandas as pd
-import spacy
 from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,35 +27,34 @@ OUT_CLEAN_JD_PATH = PROCESSED_DIR / "clean_jds.csv"
 
 
 def setup_nlp():
-    """Download/initialize NLP resources (safe to call repeatedly)."""
+    """Download NLTK resources and return lemmatizer + stopwords."""
     nltk.download("stopwords", quiet=True)
     nltk.download("punkt", quiet=True)
-    nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+    nltk.download("wordnet", quiet=True)
+    nltk.download("omw-1.4", quiet=True)
+    lemmatizer = WordNetLemmatizer()
     stops = set(stopwords.words("english"))
-    return nlp, stops
+    return lemmatizer, stops
 
 
-def remove_html(text: str) -> str:
-    """Remove HTML tags and collapse spaces."""
+def remove_html(text):
+    # type: (str) -> str
+    """Remove HTML tags and collapse whitespace."""
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
-def normalize_text(text: str) -> str:
+def normalize_text(text):
+    # type: (str) -> str
     """Lowercase and keep alphabetic characters/spaces only."""
     text = text.lower()
     text = re.sub(r"[^a-z\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
-def clean_text(text: str, nlp, stop_words: set[str]) -> str:
-    """
-    Full cleaning pipeline for one document.
-
-    TODO (learning):
-    - Try preserving numbers like 'aws s3' or versions if you need them.
-    - Try a custom stopword list for domain terms.
-    """
+def clean_text(text, lemmatizer, stop_words):
+    # type: (str, WordNetLemmatizer, Set[str]) -> str
+    """Full cleaning pipeline for one document using NLTK."""
     if not isinstance(text, str):
         text = "" if pd.isna(text) else str(text)
 
@@ -70,13 +63,17 @@ def clean_text(text: str, nlp, stop_words: set[str]) -> str:
     if not text:
         return ""
 
-    doc = nlp(text)
-    tokens = [t.lemma_.strip() for t in doc if t.lemma_ and t.lemma_ not in stop_words]
-    tokens = [t for t in tokens if len(t) > 1]
+    tokens = nltk.word_tokenize(text)
+    tokens = [
+        lemmatizer.lemmatize(t)
+        for t in tokens
+        if t not in stop_words and len(t) > 1
+    ]
     return " ".join(tokens)
 
 
-def _find_column(columns: Iterable[str], candidates: list[str]) -> str | None:
+def _find_column(columns, candidates):
+    # type: (Iterable[str], List[str]) -> Optional[str]
     lower_map = {c.lower(): c for c in columns}
     for c in candidates:
         if c.lower() in lower_map:
@@ -84,7 +81,8 @@ def _find_column(columns: Iterable[str], candidates: list[str]) -> str | None:
     return None
 
 
-def preprocess_resumes(df: pd.DataFrame, nlp, stop_words: set[str]) -> pd.DataFrame:
+def preprocess_resumes(df, lemmatizer, stop_words):
+    # type: (pd.DataFrame, WordNetLemmatizer, Set[str]) -> pd.DataFrame
     """Create clean resume dataframe with stable columns for downstream stages."""
     resume_col = _find_column(df.columns, ["Resume_str", "resume", "resume_text", "text"])
     id_col = _find_column(df.columns, ["ID", "id"])
@@ -97,19 +95,18 @@ def preprocess_resumes(df: pd.DataFrame, nlp, stop_words: set[str]) -> pd.DataFr
     out["ID"] = df[id_col] if id_col else range(len(df))
     out["Category"] = df[category_col] if category_col else "unknown"
     out["raw_text"] = df[resume_col].fillna("")
-    out["clean_text"] = out["raw_text"].map(lambda x: clean_text(x, nlp, stop_words))
+    print("Cleaning resumes...")
+    out["clean_text"] = out["raw_text"].map(lambda x: clean_text(x, lemmatizer, stop_words))
     return out
 
 
-def preprocess_job_descriptions(df: pd.DataFrame, nlp, stop_words: set[str]) -> pd.DataFrame:
-    """
-    Build a single `raw_text` field from common job dataset columns.
-
-    TODO (learning):
-    - Experiment with different column combinations / weighting.
-    """
+def preprocess_job_descriptions(df, lemmatizer, stop_words):
+    # type: (pd.DataFrame, WordNetLemmatizer, Set[str]) -> pd.DataFrame
+    """Build a single clean_text field from common job dataset columns."""
     out = pd.DataFrame()
-    out["JobID"] = df[_find_column(df.columns, ["JobID", "id"]) or df.columns[0]]
+    id_col = _find_column(df.columns, ["JobID", "id"])
+    out["JobID"] = df[id_col] if id_col else range(len(df))
+
     title_col = _find_column(df.columns, ["Title"])
     skills_col = _find_column(df.columns, ["Skills"])
     resp_col = _find_column(df.columns, ["Responsibilities", "Responsibility"])
@@ -128,30 +125,36 @@ def preprocess_job_descriptions(df: pd.DataFrame, nlp, stop_words: set[str]) -> 
         raw_text = raw_text + " " + part
 
     out["raw_text"] = raw_text
-    out["clean_text"] = out["raw_text"].map(lambda x: clean_text(x, nlp, stop_words))
+    print("Cleaning job descriptions...")
+    out["clean_text"] = out["raw_text"].map(lambda x: clean_text(x, lemmatizer, stop_words))
     return out
 
 
-def run(sample_size: int | None = None) -> None:
+def run(sample_size=None):
+    # type: (Optional[int]) -> None
     """Main Stage 1 execution."""
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    nlp, stop_words = setup_nlp()
+    lemmatizer, stop_words = setup_nlp()
 
     resumes = pd.read_csv(RAW_RESUME_PATH)
-    jobs = pd.read_csv(RAW_JD_PATH)
 
     if sample_size:
         resumes = resumes.head(sample_size).copy()
-        jobs = jobs.head(sample_size).copy()
 
-    clean_resumes = preprocess_resumes(resumes, nlp, stop_words)
-    clean_jobs = preprocess_job_descriptions(jobs, nlp, stop_words)
-
+    clean_resumes = preprocess_resumes(resumes, lemmatizer, stop_words)
     clean_resumes.to_csv(OUT_CLEAN_RESUME_PATH, index=False)
-    clean_jobs.to_csv(OUT_CLEAN_JD_PATH, index=False)
+    print("Saved: {}".format(OUT_CLEAN_RESUME_PATH))
 
-    print(f"Saved: {OUT_CLEAN_RESUME_PATH}")
-    print(f"Saved: {OUT_CLEAN_JD_PATH}")
+    if RAW_JD_PATH.exists():
+        jobs = pd.read_csv(RAW_JD_PATH)
+        if sample_size:
+            jobs = jobs.head(sample_size).copy()
+        clean_jobs = preprocess_job_descriptions(jobs, lemmatizer, stop_words)
+        clean_jobs.to_csv(OUT_CLEAN_JD_PATH, index=False)
+        print("Saved: {}".format(OUT_CLEAN_JD_PATH))
+    else:
+        print("No job descriptions file found at {} — skipping.".format(RAW_JD_PATH))
+
     print("Stage 1 complete.")
 
 
