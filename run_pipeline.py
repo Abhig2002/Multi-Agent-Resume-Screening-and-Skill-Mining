@@ -41,6 +41,11 @@ def parse_args():
         default=220,
         help="Max generated tokens for Hugging Face extraction.",
     )
+    parser.add_argument(
+        "--refill-empty",
+        action="store_true",
+        help="Re-run only cached skill rows where technical and soft are both empty.",
+    )
     return parser.parse_args()
 
 
@@ -56,6 +61,7 @@ def main():
             llm_provider=args.llm_provider,
             hf_model_name=args.hf_model_name,
             hf_max_new_tokens=args.hf_max_new_tokens,
+            refill_empty=args.refill_empty,
         )
     elif args.stage == "week1":
         run_preprocessing(sample_size=args.sample_size)
@@ -65,6 +71,7 @@ def main():
             llm_provider=args.llm_provider,
             hf_model_name=args.hf_model_name,
             hf_max_new_tokens=args.hf_max_new_tokens,
+            refill_empty=args.refill_empty,
         )
     else:
         raise ValueError(f"Unsupported stage: {args.stage}")
