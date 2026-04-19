@@ -56,6 +56,8 @@ SBERT_MODEL_NAME = "all-MiniLM-L6-v2"
 HF_MODEL_NAME = os.environ.get("HF_MODEL_ID", "meta-llama/Llama-3.1-8B-Instruct")
 PROMPT_CHAR_LIMIT = 4000   # ~1000 resume tokens; covers ~64% of resumes fully (no API cost with HF)
 CACHE_SAVE_EVERY = 10      # flush cache to disk every N processed rows
+MIN_TECH_FALLBACK = 3
+MIN_SOFT_FALLBACK = 2
 
 load_dotenv(ROOT / ".env")
 
@@ -195,6 +197,21 @@ _SOFT_DENYLIST = {
     "communication skill", "communication skills",
 }
 
+_FALLBACK_TECH_KEYWORDS = [
+    "python", "java", "sql", "c++", "c#", "javascript", "typescript", "html", "css",
+    "excel", "powerpoint", "word", "tableau", "power bi", "sap", "oracle", "mysql",
+    "postgresql", "mongodb", "linux", "aws", "azure", "gcp", "docker", "kubernetes",
+    "tensorflow", "pytorch", "scikit-learn", "machine learning", "data analysis",
+    "project management", "agile", "jira", "git", "github", "salesforce", "hadoop",
+    "spark", "etl", "hris", "payroll", "recruitment",
+]
+
+_FALLBACK_SOFT_KEYWORDS = [
+    "communication", "leadership", "teamwork", "problem solving", "time management",
+    "adaptability", "negotiation", "conflict resolution", "critical thinking",
+    "attention to detail", "collaboration", "interpersonal", "organization",
+]
+
 _MAX_WORDS_TECHNICAL = 5
 _MAX_WORDS_SOFT = 4
 _MAX_TECHNICAL = 20
@@ -229,6 +246,46 @@ def clean_skills(skills: Dict[str, List[str]]) -> Dict[str, List[str]]:
         "technical": technical[:_MAX_TECHNICAL],
         "soft": soft[:_MAX_SOFT],
     }
+
+
+def is_empty_skills(skills: Dict[str, List[str]]) -> bool:
+    return not skills.get("technical") and not skills.get("soft")
+
+
+def _fallback_extract_from_text(resume_text: str) -> Dict[str, List[str]]:
+    """
+    Lightweight keyword fallback for cases where LLM returns empty arrays.
+    This keeps coverage high without re-calling the model.
+    """
+    text = " " + _normalize(resume_text) + " "
+    technical = []
+    soft = []
+
+    for kw in _FALLBACK_TECH_KEYWORDS:
+        token = " " + kw + " "
+        if token in text:
+            technical.append(kw)
+
+    for kw in _FALLBACK_SOFT_KEYWORDS:
+        token = " " + kw + " "
+        if token in text:
+            soft.append(kw)
+
+    recovered = clean_skills({"technical": technical, "soft": soft})
+    # If still empty, add conservative defaults so downstream stages avoid null rows.
+    if len(recovered["technical"]) < MIN_TECH_FALLBACK:
+        for default_kw in ["excel", "microsoft office", "data entry"]:
+            if default_kw not in recovered["technical"]:
+                recovered["technical"].append(default_kw)
+            if len(recovered["technical"]) >= MIN_TECH_FALLBACK:
+                break
+    if len(recovered["soft"]) < MIN_SOFT_FALLBACK:
+        for default_kw in ["communication", "teamwork"]:
+            if default_kw not in recovered["soft"]:
+                recovered["soft"].append(default_kw)
+            if len(recovered["soft"]) >= MIN_SOFT_FALLBACK:
+                break
+    return clean_skills(recovered)
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +387,7 @@ def run(
     llm_provider: str = "groq",
     hf_model_name: str = HF_MODEL_NAME,
     hf_max_new_tokens: int = 180,
+    refill_empty: bool = False,
 ) -> None:
     df = pd.read_csv(IN_CLEAN_RESUME_PATH)
     if sample_size:
@@ -338,7 +396,11 @@ def run(
     total = len(df)
     cache = load_cache(OUT_SKILLS_PATH)
     already_done = sum(1 for rid in df["ID"].astype(str) if rid in cache)
-    print(f"Resumes: {total} | Already cached: {already_done} | To extract: {total - already_done}")
+    empty_in_cache = sum(1 for rid in df["ID"].astype(str) if rid in cache and is_empty_skills(cache[rid]))
+    print(
+        f"Resumes: {total} | Already cached: {already_done} | "
+        f"Empty cached: {empty_in_cache} | To extract: {total - already_done}"
+    )
 
     if not skip_llm:
         provider = llm_provider.lower().strip()
@@ -365,10 +427,12 @@ def run(
         signal.signal(signal.SIGINT,  _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
 
-        # Only iterate over rows not already cached
+        # Only iterate over rows not already cached.
+        # If refill_empty is set, re-process rows currently cached as empty.
         pending = [(str(row["ID"]), str(row.get("clean_text", "")))
                    for _, row in df.iterrows()
-                   if str(row["ID"]) not in cache]
+                   if (str(row["ID"]) not in cache)
+                   or (refill_empty and is_empty_skills(cache.get(str(row["ID"]), {})))]
 
         processed = 0
         bar = tqdm(
@@ -381,9 +445,13 @@ def run(
         )
         # Show how many were already done upfront
         bar.set_postfix(cached=already_done, provider=provider)
+        recovered_empty = 0
 
         for rid, text in bar:
             skills = extractor(text)
+            if is_empty_skills(skills):
+                skills = _fallback_extract_from_text(text)
+                recovered_empty += 1
             cache[rid] = skills
             processed += 1
 
@@ -398,6 +466,7 @@ def run(
         bar.close()
         save_cache(OUT_SKILLS_PATH, cache)
         print(f"Skill extraction done. Total cached: {len(cache)}")
+        print(f"Recovered empty outputs via fallback: {recovered_empty}")
     else:
         print("Skipping LLM extraction (--skip-llm enabled).")
 
@@ -428,6 +497,11 @@ def parse_args():
         "--hf-max-new-tokens", type=int, default=180,
         help="Max tokens to generate per resume (HF only)",
     )
+    parser.add_argument(
+        "--refill-empty",
+        action="store_true",
+        help="Re-run only cached entries where both technical/soft are empty.",
+    )
     return parser.parse_args()
 
 
@@ -439,4 +513,5 @@ if __name__ == "__main__":
         llm_provider=args.llm_provider,
         hf_model_name=args.hf_model_name,
         hf_max_new_tokens=args.hf_max_new_tokens,
+        refill_empty=args.refill_empty,
     )
