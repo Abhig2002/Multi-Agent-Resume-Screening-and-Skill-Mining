@@ -1,17 +1,4 @@
-"""
-Stage 2 - Skill Extraction Agent
-=================================
-Supports two LLM backends:
-  - groq        : Groq API (llama-3.1-8b-instant) — fast, rate-limited
-  - huggingface : Local instruct model via transformers — no rate limit,
-                  compute-limited, runs fully offline after first download
-
-HuggingFace path improvements:
-  - Uses instruct chat template (system+user messages) for better JSON output
-  - Batches multiple resumes per model call for throughput
-  - Progress logged every N rows
-  - Cache written every N rows (not per-row) to reduce disk IO
-"""
+# stage 2: pull skills from resumes with groq or huggingface, then SBERT embeddings
 
 import argparse
 import json
@@ -22,7 +9,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from tqdm import tqdm
 
@@ -51,49 +38,35 @@ OUT_SKILLS_PATH = PROCESSED_DIR / "skill_lists.json"
 OUT_EMBED_PATH = PROCESSED_DIR / "embeddings.npy"
 
 GROQ_MODEL = "llama-3.1-8b-instant"
-GROQ_SLEEP = 10.0          # safe pacing for 6K TPM free tier (~1 req/10s)
+GROQ_SLEEP = 10.0  # groq free tier is easy to hit
 SBERT_MODEL_NAME = "all-MiniLM-L6-v2"
 HF_MODEL_NAME = os.environ.get("HF_MODEL_ID", "meta-llama/Llama-3.1-8B-Instruct")
-PROMPT_CHAR_LIMIT = 4000   # ~1000 resume tokens; covers ~64% of resumes fully (no API cost with HF)
-CACHE_SAVE_EVERY = 10      # flush cache to disk every N processed rows
+PROMPT_CHAR_LIMIT = 4000
+CACHE_SAVE_EVERY = 10
 MIN_TECH_FALLBACK = 3
 MIN_SOFT_FALLBACK = 2
 
 load_dotenv(ROOT / ".env")
 
 
-# ---------------------------------------------------------------------------
-# Groq client
-# ---------------------------------------------------------------------------
-
 def get_groq_client():
     key = os.environ.get("GROQ_API_KEY", "")
     if not key:
-        raise ValueError("Missing GROQ_API_KEY. Set it in .env or environment.")
+        raise ValueError("need GROQ_API_KEY in env or .env")
     if Groq is None:
-        raise ImportError("groq not installed. Run: pip install groq")
+        raise ImportError("pip install groq")
     return Groq(api_key=key)
 
 
-# ---------------------------------------------------------------------------
-# HuggingFace model (loaded once, reused for all resumes)
-# ---------------------------------------------------------------------------
-
 def load_hf_model(model_name: str):
-    """
-    Load an instruct model + tokenizer from HuggingFace.
-    Uses bfloat16 on CUDA if available, otherwise float32 on CPU.
-    If HF_TOKEN is set in .env, it is passed for gated/private models
-    (e.g. meta-llama/Llama-3.2-1B-Instruct, mistralai/Mistral-7B-Instruct-v0.3).
-    """
     if not HAS_TRANSFORMERS:
-        raise ImportError("transformers/torch not installed. Run: pip install transformers torch")
+        raise ImportError("need transformers and torch")
 
-    hf_token = os.environ.get("HF_TOKEN") or None  # None = use cached login / public only
+    hf_token = os.environ.get("HF_TOKEN") or None
 
-    print(f"Loading HF model: {model_name} (first run downloads weights)")
+    print("loading model", model_name)
     if hf_token:
-        print("  Using HF_TOKEN from .env for authenticated download")
+        print("(using HF_TOKEN)")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
@@ -109,34 +82,23 @@ def load_hf_model(model_name: str):
         _print_hf_403_help(str(err))
         raise
     model.eval()
-    print(f"Model loaded on {device}")
+    print("done, device =", device)
     return tokenizer, model
 
 
 def _print_hf_403_help(err_text: str) -> None:
-    """Explain common 403 / gated-repo failures (fine-grained token scope)."""
     low = err_text.lower()
     if "403" not in low and "forbidden" not in low and "gated" not in low:
         return
-    print(
-        "\n"
-        "Hugging Face blocked this download (403). For gated models (e.g. Meta Llama):\n"
-        "  1. Open the model page on huggingface.co and click to accept the license.\n"
-        "  2. If your token is FINE-GRAINED: huggingface.co/settings/tokens → edit the token →\n"
-        "     turn ON 'Access to public gated repositories' (or create a Classic Read token).\n"
-        "  3. Or skip Llama and use an open model, e.g.:\n"
-        "     --hf-model-name Qwen/Qwen2.5-3B-Instruct\n"
-    )
+    print("got 403 from huggingface - check you accepted the model license + token can read gated repos")
+    print("or try --hf-model-name Qwen/Qwen2.5-3B-Instruct")
 
-
-# ---------------------------------------------------------------------------
-# Prompt helpers
-# ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
     "You are a resume skill extractor. "
     "Always respond with ONLY valid JSON — no explanation, no markdown."
 )
+
 
 def build_user_message(resume_text: str) -> str:
     return (
@@ -153,13 +115,9 @@ def build_user_message(resume_text: str) -> str:
 def build_chat_messages(resume_text: str) -> List[Dict]:
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user",   "content": build_user_message(resume_text)},
+        {"role": "user", "content": build_user_message(resume_text)},
     ]
 
-
-# ---------------------------------------------------------------------------
-# JSON parsing
-# ---------------------------------------------------------------------------
 
 def _extract_json_block(raw: str) -> str:
     if not raw:
@@ -176,14 +134,12 @@ def parse_skill_json(raw: str) -> Dict[str, List[str]]:
         return {"technical": [], "soft": []}
     technical = data.get("technical", [])
     soft = data.get("soft", [])
-    if not isinstance(technical, list): technical = []
-    if not isinstance(soft, list): soft = []
+    if not isinstance(technical, list):
+        technical = []
+    if not isinstance(soft, list):
+        soft = []
     return {"technical": technical, "soft": soft}
 
-
-# ---------------------------------------------------------------------------
-# Skill filtering + normalization
-# ---------------------------------------------------------------------------
 
 _BLOCKED_FRAGMENTS = {
     "university", "college", "club", "association",
@@ -239,7 +195,6 @@ def _keep_soft(item: str) -> bool:
 
 
 def clean_skills(skills: Dict[str, List[str]]) -> Dict[str, List[str]]:
-    """Normalize, filter noise, deduplicate, cap list sizes."""
     technical = sorted({_normalize(x) for x in skills.get("technical", []) if _keep_technical(x)})
     soft = sorted({_normalize(x) for x in skills.get("soft", []) if _keep_soft(x)})
     return {
@@ -253,10 +208,7 @@ def is_empty_skills(skills: Dict[str, List[str]]) -> bool:
 
 
 def _fallback_extract_from_text(resume_text: str) -> Dict[str, List[str]]:
-    """
-    Lightweight keyword fallback for cases where LLM returns empty arrays.
-    This keeps coverage high without re-calling the model.
-    """
+    # if llm returns nothing, scrape a few keywords so arm/clustering dont break
     text = " " + _normalize(resume_text) + " "
     technical = []
     soft = []
@@ -272,7 +224,6 @@ def _fallback_extract_from_text(resume_text: str) -> Dict[str, List[str]]:
             soft.append(kw)
 
     recovered = clean_skills({"technical": technical, "soft": soft})
-    # If still empty, add conservative defaults so downstream stages avoid null rows.
     if len(recovered["technical"]) < MIN_TECH_FALLBACK:
         for default_kw in ["excel", "microsoft office", "data entry"]:
             if default_kw not in recovered["technical"]:
@@ -288,10 +239,6 @@ def _fallback_extract_from_text(resume_text: str) -> Dict[str, List[str]]:
     return clean_skills(recovered)
 
 
-# ---------------------------------------------------------------------------
-# Cache helpers
-# ---------------------------------------------------------------------------
-
 def load_cache(path: Path) -> Dict[str, Any]:
     if path.exists():
         with path.open("r", encoding="utf-8") as f:
@@ -300,8 +247,7 @@ def load_cache(path: Path) -> Dict[str, Any]:
 
 
 def save_cache(path: Path, payload: Dict[str, Any]) -> None:
-    """Atomic write: write to a temp file then rename, so a crash mid-write
-    never corrupts the existing cache file."""
+    # write temp file then rename so we dont corrupt json if killed mid-write
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
@@ -312,10 +258,6 @@ def save_cache(path: Path, payload: Dict[str, Any]) -> None:
         os.unlink(tmp_path)
         raise
 
-
-# ---------------------------------------------------------------------------
-# Extractors
-# ---------------------------------------------------------------------------
 
 def _groq_extractor(client) -> Callable[[str], Dict[str, List[str]]]:
     def extract(resume_text: str) -> Dict[str, List[str]]:
@@ -330,14 +272,10 @@ def _groq_extractor(client) -> Callable[[str], Dict[str, List[str]]]:
 
 
 def _hf_extractor(tokenizer, model, max_new_tokens: int) -> Callable[[str], Dict[str, List[str]]]:
-    """
-    Single-resume extractor using instruct chat template.
-    """
     device = next(model.parameters()).device
 
     def extract(resume_text: str) -> Dict[str, List[str]]:
         messages = build_chat_messages(resume_text)
-        # apply_chat_template formats messages correctly for the instruct model
         prompt = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -351,7 +289,6 @@ def _hf_extractor(tokenizer, model, max_new_tokens: int) -> Callable[[str], Dict
                 do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
             )
-        # decode only the newly generated tokens
         new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
         text = tokenizer.decode(new_tokens, skip_special_tokens=True)
         parsed = parse_skill_json(text)
@@ -360,26 +297,18 @@ def _hf_extractor(tokenizer, model, max_new_tokens: int) -> Callable[[str], Dict
     return extract
 
 
-# ---------------------------------------------------------------------------
-# SBERT embeddings
-# ---------------------------------------------------------------------------
-
 def generate_embeddings(texts: List[str], batch_size: int = 64) -> np.ndarray:
-    """Generate SBERT embeddings in batches with a tqdm progress bar."""
     model = SentenceTransformer(SBERT_MODEL_NAME)
     all_batches = []
     batches = range(0, len(texts), batch_size)
-    for i in tqdm(batches, desc="SBERT embeddings", unit="batch", dynamic_ncols=True):
+    for i in tqdm(batches, desc="embeddings", unit="batch", dynamic_ncols=True):
         batch = texts[i : i + batch_size]
         all_batches.append(model.encode(batch, show_progress_bar=False))
     if not all_batches:
-        return np.empty((0, 384), dtype=np.float32)
+        dim = int(model.get_sentence_embedding_dimension())
+        return np.empty((0, dim), dtype=np.float32)
     return np.vstack(all_batches)
 
-
-# ---------------------------------------------------------------------------
-# Main runner
-# ---------------------------------------------------------------------------
 
 def run(
     sample_size: Optional[int] = None,
@@ -397,10 +326,7 @@ def run(
     cache = load_cache(OUT_SKILLS_PATH)
     already_done = sum(1 for rid in df["ID"].astype(str) if rid in cache)
     empty_in_cache = sum(1 for rid in df["ID"].astype(str) if rid in cache and is_empty_skills(cache[rid]))
-    print(
-        f"Resumes: {total} | Already cached: {already_done} | "
-        f"Empty cached: {empty_in_cache} | To extract: {total - already_done}"
-    )
+    print(total, "resumes,", already_done, "cached,", empty_in_cache, "empty,", total - already_done, "left to run")
 
     if not skip_llm:
         provider = llm_provider.lower().strip()
@@ -411,39 +337,25 @@ def run(
             tokenizer, model = load_hf_model(hf_model_name)
             extractor = _hf_extractor(tokenizer, model, hf_max_new_tokens)
         else:
-            raise ValueError("llm_provider must be: groq or huggingface")
+            raise ValueError("llm_provider should be groq or huggingface")
 
-        print(f"LLM provider : {provider}")
+        print("using", provider)
 
-        # --- Ctrl+C / SIGTERM handler: save progress before exit ---
-        _interrupted = False
         def _handle_signal(sig, frame):
-            nonlocal _interrupted
-            _interrupted = True
-            tqdm.write("\n[!] Interrupted — saving cache and exiting cleanly...")
+            tqdm.write("saving and exiting...")
             save_cache(OUT_SKILLS_PATH, cache)
-            tqdm.write(f"    Cache saved: {len(cache)} resumes. Re-run to continue.")
             sys.exit(0)
-        signal.signal(signal.SIGINT,  _handle_signal)
+
+        signal.signal(signal.SIGINT, _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
 
-        # Only iterate over rows not already cached.
-        # If refill_empty is set, re-process rows currently cached as empty.
         pending = [(str(row["ID"]), str(row.get("clean_text", "")))
                    for _, row in df.iterrows()
                    if (str(row["ID"]) not in cache)
                    or (refill_empty and is_empty_skills(cache.get(str(row["ID"]), {})))]
 
         processed = 0
-        bar = tqdm(
-            pending,
-            total=len(pending),
-            desc="Extracting skills",
-            unit="resume",
-            initial=0,
-            dynamic_ncols=True,
-        )
-        # Show how many were already done upfront
+        bar = tqdm(pending, total=len(pending), desc="skills", unit="r")
         bar.set_postfix(cached=already_done, provider=provider)
         recovered_empty = 0
 
@@ -465,43 +377,25 @@ def run(
 
         bar.close()
         save_cache(OUT_SKILLS_PATH, cache)
-        print(f"Skill extraction done. Total cached: {len(cache)}")
-        print(f"Recovered empty outputs via fallback: {recovered_empty}")
+        print("cached", len(cache), "resumes,", recovered_empty, "needed fallback")
     else:
-        print("Skipping LLM extraction (--skip-llm enabled).")
+        print("skip llm")
 
-    print("Generating SBERT embeddings...")
+    print("SBERT...")
     embeds = generate_embeddings(df["clean_text"].fillna("").astype(str).tolist())
     np.save(OUT_EMBED_PATH, embeds)
-    print(f"Saved embeddings: {OUT_EMBED_PATH}  shape={embeds.shape}")
-    print("Stage 2 complete.")
+    print("wrote", OUT_EMBED_PATH, embeds.shape)
+    print("stage 2 done")
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Stage 2 — skill extraction + embeddings.")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument("--skip-llm", action="store_true")
-    parser.add_argument(
-        "--llm-provider", choices=["groq", "huggingface"], default="groq",
-        help="LLM backend (default: groq)",
-    )
-    parser.add_argument(
-        "--hf-model-name", default=HF_MODEL_NAME,
-        help="HuggingFace model id (instruct model recommended)",
-    )
-    parser.add_argument(
-        "--hf-max-new-tokens", type=int, default=180,
-        help="Max tokens to generate per resume (HF only)",
-    )
-    parser.add_argument(
-        "--refill-empty",
-        action="store_true",
-        help="Re-run only cached entries where both technical/soft are empty.",
-    )
+    parser.add_argument("--llm-provider", choices=["groq", "huggingface"], default="groq")
+    parser.add_argument("--hf-model-name", default=HF_MODEL_NAME)
+    parser.add_argument("--hf-max-new-tokens", type=int, default=180)
+    parser.add_argument("--refill-empty", action="store_true")
     return parser.parse_args()
 
 

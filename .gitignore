@@ -24,6 +24,8 @@ data/raw/*.csv
 data/raw/*.json
 data/processed/*
 !data/processed/.gitkeep
+!data/processed/skill_lists.json
+!data/processed/embeddings.npy
 
 # Jupyter
 .ipynb_checkpoints/
