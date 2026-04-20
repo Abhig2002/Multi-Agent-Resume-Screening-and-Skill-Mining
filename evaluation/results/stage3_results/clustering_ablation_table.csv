@@ -1,0 +1,4 @@
+variant,best_k,silhouette,davies_bouldin,calinski_harabasz,nmi_with_category,purity_with_category,cluster_size_min,cluster_size_max,cluster_size_mean,pca_components,pca_variance_explained
+norm,11,0.1008,2.5883,97.1,0.4392,0.4002,78,403,225.8,,
+nonorm,11,0.1008,2.5883,97.1,0.4392,0.4002,78,403,225.8,,
+norm_pca64,10,0.1311,2.2229,141.3,0.423,0.3724,77,380,248.4,64,0.7967365384101868

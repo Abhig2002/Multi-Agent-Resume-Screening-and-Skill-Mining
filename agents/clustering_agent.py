@@ -10,7 +10,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
-from sklearn.metrics import normalized_mutual_info_score, silhouette_score
+from sklearn.decomposition import PCA
+from sklearn.metrics import (
+    calinski_harabasz_score,
+    davies_bouldin_score,
+    normalized_mutual_info_score,
+    silhouette_score,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -33,6 +39,7 @@ def run(
     k_min: int = 8,
     k_max: int = 16,
     normalize_embeddings: bool = True,
+    pca_components: int | None = None,
 ) -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     STAGE_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -51,10 +58,20 @@ def run(
         norms = np.maximum(norms, 1e-12)
         emb = emb / norms
 
+    pca_variance_explained = None
+    if pca_components is not None:
+        n_components = min(pca_components, emb.shape[0], emb.shape[1])
+        pca = PCA(n_components=n_components, random_state=RANDOM_STATE)
+        emb = pca.fit_transform(emb)
+        pca_variance_explained = float(pca.explained_variance_ratio_.sum())
+        print(f"PCA: {n_components} components, {pca_variance_explained:.3f} variance explained")
+
     best_k = k_min
     best_sil = -1.0
     scores = {}
     inertias = {}
+    db_scores = {}
+    ch_scores = {}
 
     for k in range(k_min, k_max + 1):
         km = KMeans(n_clusters=k, random_state=RANDOM_STATE, n_init=10)
@@ -62,6 +79,8 @@ def run(
         sil = silhouette_score(emb, labels, sample_size=min(2000, len(emb)), random_state=RANDOM_STATE)
         scores[k] = float(sil)
         inertias[k] = float(km.inertia_)
+        db_scores[k] = float(davies_bouldin_score(emb, labels))
+        ch_scores[k] = float(calinski_harabasz_score(emb, labels))
         if sil > best_sil:
             best_sil = sil
             best_k = k
@@ -89,14 +108,24 @@ def run(
     out.to_csv(STAGE_RESULTS_DIR / "cluster_assignments.csv", index=False)
     print("wrote clusters k=", best_k, "->", OUT_CLUSTERS_PATH)
 
+    sizes = list(cluster_size_by_id.values())
     summary = {
         "best_k": best_k,
         "best_silhouette": best_sil,
+        "davies_bouldin_at_best_k": db_scores[best_k],
+        "calinski_harabasz_at_best_k": ch_scores[best_k],
         "silhouette_by_k": scores,
+        "davies_bouldin_by_k": db_scores,
+        "calinski_harabasz_by_k": ch_scores,
         "inertia_by_k": inertias,
         "n_samples": int(len(df)),
         "normalized_embeddings": normalize_embeddings,
+        "pca_components": pca_components,
+        "pca_variance_explained": pca_variance_explained,
         "cluster_size_by_id": cluster_size_by_id,
+        "cluster_size_min": int(min(sizes)),
+        "cluster_size_max": int(max(sizes)),
+        "cluster_size_mean": round(sum(sizes) / len(sizes), 1),
         "nmi_with_category": nmi_with_category,
         "purity_with_category": purity_with_category,
     }
@@ -106,6 +135,8 @@ def run(
 
     # stage-specific copies (overwrite latest)
     variant = "norm" if normalize_embeddings else "nonorm"
+    if pca_components is not None:
+        variant = f"{variant}_pca{pca_components}"
     stage_summary_path = STAGE_RESULTS_DIR / f"clustering_summary_{variant}.json"
     with stage_summary_path.open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
@@ -133,6 +164,12 @@ def parse_args():
         help="Disable L2-normalization before clustering.",
     )
     p.set_defaults(normalize_embeddings=True)
+    p.add_argument(
+        "--pca-components",
+        type=int,
+        default=None,
+        help="Reduce embeddings with PCA before clustering (e.g. 64 or 128). Default: no PCA.",
+    )
     return p.parse_args()
 
 
@@ -143,4 +180,5 @@ if __name__ == "__main__":
         k_min=args.k_min,
         k_max=args.k_max,
         normalize_embeddings=args.normalize_embeddings,
+        pca_components=args.pca_components,
     )

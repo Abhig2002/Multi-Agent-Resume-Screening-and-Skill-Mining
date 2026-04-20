@@ -81,6 +81,12 @@ def parse_args():
     )
     parser.set_defaults(normalize_embeddings=True)
     parser.add_argument(
+        "--pca-components",
+        type=int,
+        default=None,
+        help="PCA dimensionality reduction before K-Means (e.g. 64). Default: no PCA.",
+    )
+    parser.add_argument(
         "--min-support",
         type=float,
         default=0.05,
@@ -125,6 +131,7 @@ def main():
             k_min=args.k_min,
             k_max=args.k_max,
             normalize_embeddings=args.normalize_embeddings,
+            pca_components=args.pca_components,
         )
     elif args.stage == "arm":
         run_arm(
@@ -144,6 +151,7 @@ def main():
             k_min=args.k_min,
             k_max=args.k_max,
             normalize_embeddings=args.normalize_embeddings,
+            pca_components=args.pca_components,
         )
         run_arm(min_support=args.min_support, sample_size=args.sample_size)
         run_classification(sample_size=args.sample_size)
