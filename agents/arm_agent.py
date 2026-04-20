@@ -21,8 +21,6 @@ STAGE_RESULTS_DIR = RESULTS_DIR / "stage4_results"
 
 SKILLS_PATH = PROCESSED_DIR / "skill_lists.json"
 CLEAN_RESUMES_PATH = PROCESSED_DIR / "clean_resumes.csv"
-OUT_RULES_PATH = RESULTS_DIR / "association_rules.csv"
-OUT_MATRIX_PATH = RESULTS_DIR / "skill_item_matrix_meta.json"
 
 
 def load_transactions(skills_path: Path, id_order: list | None = None) -> list:
@@ -58,7 +56,6 @@ def run(
     metric: str = "confidence",
     sample_size: int | None = None,
 ) -> None:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     STAGE_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     id_order = None
@@ -75,7 +72,6 @@ def run(
     frequent = apriori(oht, min_support=min_support, use_colnames=True, verbose=0)
     if frequent.empty:
         print("no frequent itemsets, try lower min_support")
-        frequent.to_csv(RESULTS_DIR / "frequent_itemsets.csv", index=False)
         frequent.to_csv(STAGE_RESULTS_DIR / "frequent_itemsets.csv", index=False)
         return
 
@@ -85,11 +81,9 @@ def run(
         min_threshold=min_threshold,
     )
     rules = rules.sort_values("lift", ascending=False)
-    rules.to_csv(OUT_RULES_PATH, index=False)
     rules.to_csv(STAGE_RESULTS_DIR / "association_rules.csv", index=False)
-    frequent.to_csv(RESULTS_DIR / "frequent_itemsets.csv", index=False)
     frequent.to_csv(STAGE_RESULTS_DIR / "frequent_itemsets.csv", index=False)
-    print(len(rules), "rules ->", OUT_RULES_PATH)
+    print(len(rules), "rules ->", STAGE_RESULTS_DIR / "association_rules.csv")
 
     meta = {
         "n_transactions": len(transactions),
@@ -98,8 +92,6 @@ def run(
         "metric": metric,
         "min_threshold": min_threshold,
     }
-    with OUT_MATRIX_PATH.open("w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
     with (STAGE_RESULTS_DIR / "skill_item_matrix_meta.json").open("w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
     print("wrote stage4_results/")

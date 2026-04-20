@@ -1,0 +1,7 @@
+{
+  "n_transactions": 2484,
+  "n_unique_skills": 12164,
+  "min_support": 0.05,
+  "metric": "confidence",
+  "min_threshold": 0.5
+}

@@ -37,7 +37,6 @@ def run(
         infer_categories_in_text,
     )
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     STAGE_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     resumes = pd.read_csv(CLEAN_RESUMES_PATH)
@@ -86,9 +85,8 @@ def run(
             all_relevant.append(rel)
 
     out_rank = pd.DataFrame(rows)
-    out_rank.to_csv(RESULTS_DIR / "matching_topk.csv", index=False)
     out_rank.to_csv(STAGE_RESULTS_DIR / "matching_topk.csv", index=False)
-    print("wrote matching_topk.csv")
+    print("wrote", STAGE_RESULTS_DIR / "matching_topk.csv")
 
     if eval_precision_k and all_relevant:
         summary = []
@@ -103,7 +101,6 @@ def run(
                 }
             )
         prec_df = pd.DataFrame(summary)
-        prec_df.to_csv(RESULTS_DIR / "matching_precision_at_k.csv", index=False)
         prec_df.to_csv(STAGE_RESULTS_DIR / "matching_precision_at_k.csv", index=False)
         print("wrote matching_precision_at_k.csv (heuristic: category substring in jd text)")
 

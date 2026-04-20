@@ -33,13 +33,12 @@ This project builds a **Multi-Agent Resume Screening & Skill Mining System** —
 
 Two stages use an **LLM (Llama 3.1 8B Instruct)** where language understanding genuinely improves results over rule-based approaches. All other stages use classical data mining methods (K-Means, Apriori, SVM/Random Forest). The full system is evaluated against a plain TF-IDF single-model baseline.
 
-### Why Only Two LLM Stages?
+### Why Only One LLM Stage?
 
 | Stage | LLM? | Reason |
 |---|---|---|
-| Skill Extraction | ✅ Yes | spaCy misses domain-specific skills; LLM returns clean JSON |
-| Job Matching | ✅ Yes | Cosine similarity shortlists candidates; LLM explains *why* they fit |
-| Clustering, ARM, Classification | ❌ No | These operate on structured data — LLMs add no value here |
+| Skill Extraction | ✅ Yes | spaCy misses domain-specific skills; LLM returns structured JSON |
+| Clustering, ARM, Classification, Matching | ❌ No | These operate on structured data / embeddings — classical methods are faster, more reproducible, and easier to evaluate |
 
 ### LLM Backend — Two Options
 
@@ -170,11 +169,11 @@ Raw Resumes (Dataset 1)          Job Descriptions (Dataset 2)
 | Agent | Type | Powered By |
 |---|---|---|
 | Preprocessing Agent | Plain Python | NLTK, spaCy |
-| **Skill Extraction Agent** | **LLM API call** | **Groq — Llama 3.1 8B** |
-| Clustering Agent | Plain Python | scikit-learn K-Means |
-| ARM Agent | Plain Python | mlxtend Apriori / FP-Growth |
-| Classification Agent | Plain Python | scikit-learn SVM / Random Forest |
-| **Job Matching Agent** | **LLM API call** | **Groq — Llama 3.1 8B** |
+| **Skill Extraction Agent** | **LLM API call** | **Groq — Llama 3.1 8B / HuggingFace Llama 3.1** |
+| Clustering Agent | Plain Python | scikit-learn K-Means + PCA |
+| ARM Agent | Plain Python | mlxtend Apriori |
+| Classification Agent | Plain Python | scikit-learn LinearSVC + RandomForest |
+| Job Matching Agent | Plain Python | sentence-transformers cosine similarity |
 
 ---
 
@@ -215,44 +214,108 @@ Saved to `skill_lists.json` and `embeddings.npy`
 
 ### Stage 3 — Clustering Agent
 **Type:** Plain Python — K-Means (scikit-learn)
-**Input:** `embeddings.npy`
-**What it does:** Groups resumes by skill similarity without using labels. Optimal k selected via elbow method and silhouette scores. Expected k between 8 and 12.
-**Output:** Cluster assignments + cluster skill profiles
+**Input:** `embeddings.npy`, `clean_resumes.csv`
+**What it does:**
+- L2-normalizes embeddings before clustering (cosine-consistent geometry; toggleable via `--no-normalize-embeddings`)
+- Optional PCA dimensionality reduction before K-Means via `--pca-components N`
+- Sweeps k in `[--k-min, --k-max]` (default 8–16), selecting best k by **silhouette score**
+- Records **Davies-Bouldin** and **Calinski-Harabasz** scores per k as secondary metrics
+- Post-hoc alignment metrics computed against `Category` labels (not used during clustering): **NMI** and **purity**
+- Writes variant-specific summary files for ablation comparison (`clustering_summary_norm.json`, `clustering_summary_nonorm.json`, `clustering_summary_norm_pca64.json`)
+
+**Ablation results (MiniLM 384-d, k∈[8,16]):**
+
+| Variant | best\_k | Silhouette | Davies-Bouldin | Calinski-Harabasz | NMI | Purity |
+|---------|---------|-----------|----------------|-------------------|-----|--------|
+| Norm (no PCA) | 11 | 0.1008 | 2.588 | 97.1 | 0.439 | 0.400 |
+| No norm | 11 | 0.1008 | 2.588 | 97.1 | 0.439 | 0.400 |
+| Norm + PCA-64 | 10 | **0.1311** | **2.223** | **141.3** | 0.423 | 0.372 |
+
+PCA-64 (retaining ~80% variance) improves all internal clustering metrics at a small cost to category alignment.
+
+**Output:**
+- `data/processed/cluster_assignments.csv` — per-resume cluster labels
+- `evaluation/results/clustering_summary.json` — canonical latest
+- `evaluation/results/stage3_results/` — per-variant summaries + ablation table CSV
 
 ---
 
 ### Stage 4 — Association Rule Mining Agent
-**Type:** Plain Python — Apriori / FP-Growth (mlxtend)
-**Input:** `skill_lists.json` → binary skill matrix
-**What it does:** Mines frequent skill co-occurrence patterns. Minimum support 0.05, minimum confidence 0.6. FP-Growth run in parallel for efficiency comparison.
-**Output:** Rules like `{Python, SQL} → {Data Analyst}` with support, confidence, lift
+**Type:** Plain Python — Apriori (mlxtend)
+**Input:** `skill_lists.json`, `clean_resumes.csv`
+**What it does:** Builds a binary skill transaction matrix from extracted technical + soft skills, runs Apriori with configurable `--min-support` (default 0.05) and `--min-threshold` confidence (default 0.5), sorts rules by lift.
+
+**Results (min\_support=0.05, min\_confidence=0.5, full 2484-resume dataset):**
+
+| Metric | Value |
+|--------|-------|
+| Unique skills | 12,164 |
+| Rules mined | 330 |
+| Lift range | 0.89 – 4.70 |
+| Confidence range | 0.50 – 0.99 |
+
+Top rules by lift:
+
+| Antecedents | Consequents | Confidence | Lift |
+|-------------|-------------|-----------|------|
+| leadership, teamwork | time management, problem solving, communication | 0.574 | 4.70 |
+| teamwork, problem solving | time management, leadership, communication | 0.529 | 4.49 |
+| leadership, teamwork, communication | time management, problem solving | 0.621 | 4.41 |
+| word | powerpoint, excel | 0.604 | 3.74 |
+| word, excel | powerpoint | 0.631 | 3.51 |
+
+Two dominant skill clusters emerge: a **soft skill cluster** (leadership / teamwork / communication / time management / problem solving) and an **MS Office cluster** (Word / Excel / PowerPoint). Both show strong co-occurrence well above random chance.
+
+**Output:**
+- `evaluation/results/stage4_results/association_rules.csv` — all mined rules
+- `evaluation/results/stage4_results/frequent_itemsets.csv` — frequent skill itemsets
+- `evaluation/results/stage4_results/skill_item_matrix_meta.json` — matrix metadata
 
 ---
 
 ### Stage 5 — Classification Agent
 **Type:** Plain Python — scikit-learn
-**Input:** `embeddings.npy` (agent) or TF-IDF features (baseline)
+**Input:** `clean_resumes.csv`, `embeddings.npy`
 **What it does:**
-- **Baseline:** TF-IDF → SVM or Logistic Regression
-- **Agent version:** SBERT embeddings → RBF-kernel SVM and Random Forest
+- **Baseline:** TF-IDF (max 30K features, bigrams, min_df=2) + LinearSVC (`class_weight='balanced'`)
+- **Proposed:** SBERT embeddings + RandomForest (200 trees, `class_weight='balanced'`)
+- Stratified 70/15/15 train/val/test split (fixed `random_state=42`)
+- Evaluates both models on val and test splits; reports accuracy, macro-F1, weighted-F1, and disparity gap (max − min per-class F1)
 
-Both trained on the **70% train** split, evaluated on the **15% test** split. Use **stratified** splitting so all categories appear in train/val/test. Prefer **`class_weight='balanced'`** (or equivalent) for models that support it, to reduce sensitivity to mild class imbalance. **Output:** Predicted job category per resume, plus **per-class F1** and **disparity summary** (min/max F1 across categories) via [`evaluation/metrics.py`](evaluation/metrics.py) for the report.
+**Results (MiniLM embeddings, full 2484-resume dataset):**
+
+| Model | Split | Accuracy | Macro-F1 | Weighted-F1 |
+|-------|-------|----------|----------|-------------|
+| tfidf\_linearsvc (baseline) | val | 0.721 | 0.674 | 0.708 |
+| tfidf\_linearsvc (baseline) | test | 0.716 | 0.666 | 0.706 |
+| sbert\_rf (proposed) | val | 0.651 | 0.582 | 0.628 |
+| sbert\_rf (proposed) | test | 0.627 | 0.561 | 0.607 |
+
+TF-IDF + LinearSVC outperforms SBERT + RandomForest on this dataset. This is consistent with the literature on short-text classification where sparse high-precision features (TF-IDF) compete well against dense embeddings used with weaker classifiers.
+
+**Output:**
+- `evaluation/results/classification_comparison.csv`
+- `evaluation/results/per_class_f1_disparity.csv`
+- `evaluation/results/classification_test_predictions.csv`
+- `evaluation/results/stage5_results/` — same files copied for stage-specific analysis
 
 ---
 
-### Stage 6 — Job Matching Agent ⭐ LLM
-**Type:** Groq API call (Llama 3.1 8B)
-**Input:** `embeddings.npy` + job description embeddings
+### Stage 6 — Job Matching Agent
+**Type:** Plain Python — cosine similarity (sentence-transformers `all-MiniLM-L6-v2`)
+**Input:** `clean_resumes.csv`, `clean_jds.csv`, `embeddings.npy`
 **What it does:**
-- Phase 1: SBERT cosine similarity → top-10 shortlist (zero API cost)
-- Phase 2: Groq LLM called once per shortlisted candidate, returns score + explanation
+- Encodes job descriptions with a fresh MiniLM encoder
+- Computes cosine similarity between each JD and all resume embeddings
+- Returns top-K ranked resume IDs per job (configurable via `--match-top-k`, default 10)
+- Computes heuristic **Precision@K** (K=5,10) by inferring job category from JD text and checking how many top-K resumes match that category
 
 **Output:**
-```json
-{"score": 8, "reason": "Strong Python and SQL match; lacks cloud experience."}
-```
+- `evaluation/results/matching_topk.csv` — ranked resume IDs per job
+- `evaluation/results/matching_precision_at_k.csv` — mean P@5 and P@10
+- `evaluation/results/stage6_results/` — same files for stage-specific analysis
 
-**Why LLM here:** Cosine similarity alone cannot explain *why* a candidate fits. LLM reranking adds interpretability.
+**Note:** LLM reranking is not included in the current implementation. Cosine similarity alone is the matching mechanism; Precision@K is computed via a heuristic category-matching rule (not ground-truth relevance labels).
 
 ---
 
@@ -284,14 +347,19 @@ Both trained on the **70% train** split, evaluated on the **15% test** split. Us
 |---|---|---|
 | Accuracy | Classification Agent | Overall correctness across 24 categories |
 | Macro-F1 | Classification Agent | Primary metric — handles class imbalance fairly |
+| Weighted-F1 | Classification Agent | Frequency-weighted F1 |
 | Per-class F1 | Classification Agent | Identifies which categories are hardest |
-| F1 gap / disparity | Classification Agent | Max − min per-class F1 across categories — surfaces uneven performance (see §9) |
-| Silhouette Score | Clustering Agent | Cluster quality, used to select k |
+| Disparity gap | Classification Agent | Max − min per-class F1 across categories (see §9) |
+| Silhouette Score | Clustering Agent | Primary k-selection metric |
+| Davies-Bouldin | Clustering Agent | Secondary metric; lower is better |
+| Calinski-Harabasz | Clustering Agent | Secondary metric; higher is better |
+| NMI / Purity | Clustering Agent | Post-hoc alignment with ground-truth Category labels |
+| Cluster size stats | Clustering Agent | Min / max / mean cluster size |
 | Support / Confidence / Lift | ARM Agent | Rule quality and interestingness |
-| Precision@K (K=5, 10) | Job Matching Agent | Ranking quality |
+| Precision@K (K=5, 10) | Job Matching Agent | Heuristic ranking quality |
 
-**Primary comparison:** Multi-agent pipeline vs. TF-IDF + single classifier baseline
-**Secondary comparison:** LLM skill extraction vs. spaCy NER on downstream classification F1
+**Primary comparison:** Multi-agent pipeline (SBERT + RF) vs. TF-IDF + LinearSVC baseline on classification
+**Secondary comparisons:** PCA vs. no-PCA on clustering; normalization vs. no normalization on clustering
 
 ---
 
@@ -344,9 +412,24 @@ project/
 ├── evaluation/
 │   ├── metrics.py
 │   └── results/
-│       ├── classification_report.csv
-│       ├── per_class_f1_disparity.csv   # Per-class F1 + disparity summary for report
-│       └── association_rules.csv
+│       ├── stage3_results/                      # Stage 3 — Clustering
+│       │   ├── clustering_summary.json          # Latest run (default: norm)
+│       │   ├── clustering_summary_norm.json     # L2-normalized K-Means
+│       │   ├── clustering_summary_nonorm.json   # No normalization baseline
+│       │   ├── clustering_summary_norm_pca64.json  # Norm + PCA-64 ablation
+│       │   ├── clustering_ablation_table.csv    # Side-by-side ablation table
+│       │   └── cluster_assignments.csv          # Per-resume cluster labels
+│       ├── stage4_results/                      # Stage 4 — ARM
+│       │   ├── association_rules.csv
+│       │   ├── frequent_itemsets.csv
+│       │   └── skill_item_matrix_meta.json
+│       ├── stage5_results/                      # Stage 5 — Classification
+│       │   ├── classification_comparison.csv
+│       │   ├── per_class_f1_disparity.csv
+│       │   └── classification_test_predictions.csv
+│       └── stage6_results/                      # Stage 6 — Job Matching
+│           ├── matching_topk.csv
+│           └── matching_precision_at_k.csv
 │
 └── report/
     └── Group23_Final_Report.pdf
@@ -450,31 +533,64 @@ Place the raw files in :
 
 ### 5. Run the pipeline
 
-**Week 1 — preprocessing + skill extraction (HuggingFace, default):**
-```bash
-python run_pipeline.py --stage week1 --llm-provider huggingface
-```
-
-**Or use Groq API instead:**
+**Week 1 — preprocessing + skill extraction (Groq API, default):**
 ```bash
 python run_pipeline.py --stage week1 --llm-provider groq
 ```
 
-**If the run is interrupted, just re-run the same command — it resumes from the cache automatically.**
-
-**Preprocessing only:**
+**Or use HuggingFace local inference:**
 ```bash
-python run_pipeline.py --stage preprocess
+python run_pipeline.py --stage week1 --llm-provider huggingface
 ```
 
-**Skill extraction only (skip preprocessing):**
+**If the run is interrupted, just re-run the same command — it resumes from the JSON cache automatically.**
+
+**Regenerate embeddings only (skip LLM extraction):**
 ```bash
-python run_pipeline.py --stage skills --llm-provider huggingface
+python run_pipeline.py --stage skills --skip-llm
 ```
 
-**Quick test on 10 resumes:**
+**Week 2 — clustering, ARM, classification, matching (run all in sequence):**
 ```bash
-python run_pipeline.py --stage week1 --llm-provider huggingface --sample-size 10
+python run_pipeline.py --stage week2
+```
+
+**Run individual stages:**
+```bash
+python run_pipeline.py --stage cluster
+python run_pipeline.py --stage arm
+python run_pipeline.py --stage classify
+python run_pipeline.py --stage match
+```
+
+**Stage 3 — clustering with PCA dimensionality reduction:**
+```bash
+python run_pipeline.py --stage cluster --pca-components 64
+```
+
+**Stage 3 — disable L2 normalization (ablation):**
+```bash
+python run_pipeline.py --stage cluster --no-normalize-embeddings
+```
+
+**Stage 3 — widen k search range:**
+```bash
+python run_pipeline.py --stage cluster --k-min 6 --k-max 20
+```
+
+**Stage 4 — lower support threshold:**
+```bash
+python run_pipeline.py --stage arm --min-support 0.03
+```
+
+**Stage 6 — change number of top-K matches per job:**
+```bash
+python run_pipeline.py --stage match --match-top-k 5
+```
+
+**Quick smoke test on 50 resumes:**
+```bash
+python run_pipeline.py --stage week2 --sample-size 50
 ```
 
 ## 14. References
@@ -501,4 +617,4 @@ python run_pipeline.py --stage week1 --llm-provider huggingface --sample-size 10
 
 ---
 
-*Last updated: April 2026 | CSE 572 Group 23 | Arizona State University*
+*Last updated: April 20, 2026 | CSE 572 Group 23 | Arizona State University*

@@ -28,8 +28,6 @@ STAGE_RESULTS_DIR = RESULTS_DIR / "stage3_results"
 
 CLEAN_RESUMES_PATH = PROCESSED_DIR / "clean_resumes.csv"
 EMBEDDINGS_PATH = PROCESSED_DIR / "embeddings.npy"
-OUT_CLUSTERS_PATH = PROCESSED_DIR / "cluster_assignments.csv"
-OUT_SUMMARY_PATH = RESULTS_DIR / "clustering_summary.json"
 
 RANDOM_STATE = 42
 
@@ -41,7 +39,6 @@ def run(
     normalize_embeddings: bool = True,
     pca_components: int | None = None,
 ) -> None:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     STAGE_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(CLEAN_RESUMES_PATH)
@@ -104,9 +101,8 @@ def run(
             "cluster_id": cluster_ids,
         }
     )
-    out.to_csv(OUT_CLUSTERS_PATH, index=False)
     out.to_csv(STAGE_RESULTS_DIR / "cluster_assignments.csv", index=False)
-    print("wrote clusters k=", best_k, "->", OUT_CLUSTERS_PATH)
+    print("wrote clusters k=", best_k, "->", STAGE_RESULTS_DIR / "cluster_assignments.csv")
 
     sizes = list(cluster_size_by_id.values())
     summary = {
@@ -129,11 +125,6 @@ def run(
         "nmi_with_category": nmi_with_category,
         "purity_with_category": purity_with_category,
     }
-    with OUT_SUMMARY_PATH.open("w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-    print("wrote", OUT_SUMMARY_PATH)
-
-    # stage-specific copies (overwrite latest)
     variant = "norm" if normalize_embeddings else "nonorm"
     if pca_components is not None:
         variant = f"{variant}_pca{pca_components}"

@@ -1,4 +1,4 @@
-# stage 5 - tfidf+linearsvc vs sbert+rf
+# stage 5 - tfidf+linearsvc (baseline) vs sbert+rf vs sbert+linearsvc (proposed)
 
 from __future__ import annotations
 
@@ -53,7 +53,6 @@ def stratified_three_way_indices(y: list, n_samples: int):
 def run(sample_size: int | None = None) -> None:
     from evaluation.metrics import compute_classification_and_disparity
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     STAGE_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(CLEAN_RESUMES_PATH)
@@ -109,63 +108,54 @@ def run(sample_size: int | None = None) -> None:
     pred_rf_val = rf.predict(Xv_emb)
     pred_rf_test = rf.predict(Xs_emb)
 
+    sbert_svc = LinearSVC(class_weight="balanced", max_iter=5000, random_state=RANDOM_STATE)
+    sbert_svc.fit(Xt_emb, yt)
+    pred_sbert_svc_val = sbert_svc.predict(Xv_emb)
+    pred_sbert_svc_test = sbert_svc.predict(Xs_emb)
+
     metrics_tfidf_val = compute_classification_and_disparity(list(yv), list(pred_tfidf_val))
     metrics_tfidf_test = compute_classification_and_disparity(list(ys), list(pred_tfidf_test))
     metrics_rf_val = compute_classification_and_disparity(list(yv), list(pred_rf_val))
     metrics_rf_test = compute_classification_and_disparity(list(ys), list(pred_rf_test))
+    metrics_sbert_svc_val = compute_classification_and_disparity(list(yv), list(pred_sbert_svc_val))
+    metrics_sbert_svc_test = compute_classification_and_disparity(list(ys), list(pred_sbert_svc_test))
+
+    def _row(model, split, m):
+        return {
+            "model": model,
+            "split": split,
+            "accuracy": m["accuracy"],
+            "macro_f1": m["macro_f1"],
+            "weighted_f1": m["weighted_f1"],
+            "disparity_gap": m["disparity"]["gap"],
+        }
 
     comparison = pd.DataFrame(
         [
-            {
-                "model": "tfidf_linearsvc",
-                "split": "val",
-                "accuracy": metrics_tfidf_val["accuracy"],
-                "macro_f1": metrics_tfidf_val["macro_f1"],
-                "weighted_f1": metrics_tfidf_val["weighted_f1"],
-                "disparity_gap": metrics_tfidf_val["disparity"]["gap"],
-            },
-            {
-                "model": "tfidf_linearsvc",
-                "split": "test",
-                "accuracy": metrics_tfidf_test["accuracy"],
-                "macro_f1": metrics_tfidf_test["macro_f1"],
-                "weighted_f1": metrics_tfidf_test["weighted_f1"],
-                "disparity_gap": metrics_tfidf_test["disparity"]["gap"],
-            },
-            {
-                "model": "sbert_rf",
-                "split": "val",
-                "accuracy": metrics_rf_val["accuracy"],
-                "macro_f1": metrics_rf_val["macro_f1"],
-                "weighted_f1": metrics_rf_val["weighted_f1"],
-                "disparity_gap": metrics_rf_val["disparity"]["gap"],
-            },
-            {
-                "model": "sbert_rf",
-                "split": "test",
-                "accuracy": metrics_rf_test["accuracy"],
-                "macro_f1": metrics_rf_test["macro_f1"],
-                "weighted_f1": metrics_rf_test["weighted_f1"],
-                "disparity_gap": metrics_rf_test["disparity"]["gap"],
-            },
+            _row("tfidf_linearsvc", "val",  metrics_tfidf_val),
+            _row("tfidf_linearsvc", "test", metrics_tfidf_test),
+            _row("sbert_rf",        "val",  metrics_rf_val),
+            _row("sbert_rf",        "test", metrics_rf_test),
+            _row("sbert_linearsvc", "val",  metrics_sbert_svc_val),
+            _row("sbert_linearsvc", "test", metrics_sbert_svc_test),
         ]
     )
-    comparison_path = RESULTS_DIR / "classification_comparison.csv"
-    comparison.to_csv(comparison_path, index=False)
     comparison.to_csv(STAGE_RESULTS_DIR / "classification_comparison.csv", index=False)
-    print("wrote", comparison_path)
+    print("wrote", STAGE_RESULTS_DIR / "classification_comparison.csv")
 
     per_class_rows = []
     labels = sorted(set(ys))
-    for model_name, pred in [("tfidf_linearsvc", pred_tfidf_test), ("sbert_rf", pred_rf_test)]:
+    for model_name, pred in [
+        ("tfidf_linearsvc", pred_tfidf_test),
+        ("sbert_rf", pred_rf_test),
+        ("sbert_linearsvc", pred_sbert_svc_test),
+    ]:
         f1s = f1_score(ys, pred, labels=labels, average=None, zero_division=0)
         for lab, f1v in zip(labels, f1s):
             per_class_rows.append({"model": model_name, "category": lab, "f1": float(f1v)})
     per_class_df = pd.DataFrame(per_class_rows)
-    per_class_path = RESULTS_DIR / "per_class_f1_disparity.csv"
-    per_class_df.to_csv(per_class_path, index=False)
     per_class_df.to_csv(STAGE_RESULTS_DIR / "per_class_f1_disparity.csv", index=False)
-    print("wrote", per_class_path)
+    print("wrote", STAGE_RESULTS_DIR / "per_class_f1_disparity.csv")
 
     pred_detail = pd.DataFrame(
         {
@@ -173,12 +163,11 @@ def run(sample_size: int | None = None) -> None:
             "y_true": ys,
             "pred_tfidf": pred_tfidf_test,
             "pred_sbert_rf": pred_rf_test,
+            "pred_sbert_linearsvc": pred_sbert_svc_test,
         }
     )
-    detail_path = RESULTS_DIR / "classification_test_predictions.csv"
-    pred_detail.to_csv(detail_path, index=False)
     pred_detail.to_csv(STAGE_RESULTS_DIR / "classification_test_predictions.csv", index=False)
-    print("wrote", detail_path)
+    print("wrote", STAGE_RESULTS_DIR / "classification_test_predictions.csv")
     print("wrote stage5_results/")
     print("stage 5 done")
 
