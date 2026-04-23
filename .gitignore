@@ -48,3 +48,5 @@ htmlcov/
 
 # mypy
 .mypy_cache/
+
+.Final_Report.tex

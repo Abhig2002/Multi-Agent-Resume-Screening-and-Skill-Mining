@@ -1,5 +1,6 @@
 # metrics for classify + matching
 
+import re
 from typing import Any, Dict, List, Set
 
 import numpy as np
@@ -90,10 +91,60 @@ def build_relevant_ids_by_category(resumes_df: pd.DataFrame, jd_category: str) -
     return set(resumes_df.loc[mask, "ID"].astype(str).tolist())
 
 
+def _normalize_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
+
+
 def infer_categories_in_text(text: str, categories: List[str]) -> List[str]:
-    low = text.lower()
+    normalized_text = _normalize_text(text)
+    text_tokens = set(normalized_text.split())
+
+    # Aliases help map real-world job wording to resume dataset categories.
+    alias_by_category = {
+        "INFORMATION-TECHNOLOGY": [
+            "software developer",
+            "software engineer",
+            "web developer",
+            "full stack",
+            "frontend",
+            "backend",
+            "programmer",
+            "python",
+            "java",
+            "dot net",
+            "asp net",
+            "devops",
+            "cloud engineer",
+        ],
+        "BUSINESS-DEVELOPMENT": ["business development", "lead generation", "b2b sales"],
+        "PUBLIC-RELATIONS": ["public relations", "media relations", "press release"],
+        "DIGITAL-MEDIA": ["digital marketing", "digital media", "seo", "sem", "social media"],
+        "HR": ["human resources", "talent acquisition", "recruiter", "hr executive"],
+        "BPO": ["bpo", "call center", "voice process", "customer support"],
+        "ACCOUNTANT": ["accountant", "bookkeeping", "tally", "audit", "gst"],
+        "FINANCE": ["financial analyst", "finance", "fp a", "investment"],
+        "SALES": ["sales executive", "inside sales", "field sales", "account manager"],
+        "TEACHER": ["teacher", "tutor", "faculty", "lecturer"],
+    }
+
     found = []
     for cat in categories:
-        if str(cat).lower() in low:
-            found.append(cat)
+        cat_str = str(cat).upper()
+        variants = [
+            _normalize_text(cat_str),
+            _normalize_text(cat_str.replace("-", " ")),
+            _normalize_text(cat_str.replace("-", "")),
+        ] + [_normalize_text(a) for a in alias_by_category.get(cat_str, [])]
+
+        for v in variants:
+            if not v:
+                continue
+            if v in normalized_text:
+                found.append(cat)
+                break
+            v_tokens = set(v.split())
+            if v_tokens and v_tokens.issubset(text_tokens):
+                found.append(cat)
+                break
+
     return found

@@ -1,0 +1,3 @@
+k,mean_precision_at_k,mean_precision_at_k_nonempty,n_queries,n_queries_with_nonempty_relevant,n_queries_with_empty_relevant
+5,0.8546816479400748,0.9943355119825709,1068,918,150
+10,0.8510299625468165,0.990087145969499,1068,918,150

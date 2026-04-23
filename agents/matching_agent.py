@@ -1,4 +1,4 @@
-# stage 6 - cosine match jobs to resumes (no llm rerank in this version)
+# stage 6 - cosine match jobs to resumes
 
 from __future__ import annotations
 
@@ -30,6 +30,9 @@ def run(
     sample_size: int | None = None,
     top_k: int = 10,
     eval_precision_k: bool = True,
+    category_rerank: bool = True,
+    category_boost: float = 0.20,
+    rerank_pool_size: int = 300,
 ) -> None:
     from evaluation.metrics import (
         compute_mean_precision_at_k,
@@ -61,6 +64,7 @@ def run(
 
     sim = cosine_similarity(emb_jd, emb_res)
     resume_ids = resumes["ID"].astype(str).tolist()
+    resume_categories = resumes["Category"].astype(str).tolist()
     categories = sorted(resumes["Category"].astype(str).unique().tolist())
 
     rows = []
@@ -68,14 +72,41 @@ def run(
     all_relevant = []
 
     for i, jid in enumerate(jd_ids):
-        scores = sim[i]
-        order = np.argsort(-scores)
+        scores = sim[i].copy()
+        jd_text = texts_jd[i]
+        matched_cats = infer_categories_in_text(jd_text, categories)
+
+        if category_rerank and matched_cats:
+            matched_set = set(matched_cats)
+            cat_mask = np.array([c in matched_set for c in resume_categories], dtype=float)
+
+            # Semantic-first reranking:
+            # 1) take top semantic pool by cosine
+            # 2) apply a soft category bonus inside that pool
+            # 3) keep remaining resumes in original cosine order
+            base_order = np.argsort(-scores)
+            pool_n = max(top_k, min(rerank_pool_size, len(base_order)))
+            pool_idx = base_order[:pool_n]
+
+            boosted_pool_scores = scores[pool_idx] + (category_boost * cat_mask[pool_idx])
+            pool_order_local = np.argsort(-boosted_pool_scores)
+            boosted_pool_idx = pool_idx[pool_order_local]
+            tail_idx = base_order[pool_n:]
+            order = np.concatenate([boosted_pool_idx, tail_idx])
+        else:
+            order = np.argsort(-scores)
+
         ranked = [resume_ids[j] for j in order[:top_k]]
-        rows.append({"JobID": jid, "ranked_resume_ids": json.dumps(ranked)})
+        rows.append(
+            {
+                "JobID": jid,
+                "ranked_resume_ids": json.dumps(ranked),
+                "matched_categories": json.dumps(matched_cats),
+                "category_rerank_applied": bool(category_rerank and len(matched_cats) > 0),
+            }
+        )
 
         if eval_precision_k:
-            jd_text = texts_jd[i]
-            matched_cats = infer_categories_in_text(jd_text, categories)
             rel = set()
             for cat in matched_cats:
                 mask = resumes["Category"].astype(str) == cat
@@ -89,20 +120,32 @@ def run(
     print("wrote", STAGE_RESULTS_DIR / "matching_topk.csv")
 
     if eval_precision_k and all_relevant:
+        nonempty_pairs = [(r, rel) for r, rel in zip(all_ranked, all_relevant) if len(rel) > 0]
         summary = []
         for k in (5, 10):
             mean_p = compute_mean_precision_at_k(all_ranked, all_relevant, k)
+            mean_p_nonempty = (
+                compute_mean_precision_at_k(
+                    [r for r, _ in nonempty_pairs],
+                    [rel for _, rel in nonempty_pairs],
+                    k,
+                )
+                if nonempty_pairs
+                else 0.0
+            )
             summary.append(
                 {
                     "k": k,
                     "mean_precision_at_k": mean_p,
+                    "mean_precision_at_k_nonempty": mean_p_nonempty,
                     "n_queries": len(all_ranked),
+                    "n_queries_with_nonempty_relevant": len(nonempty_pairs),
                     "n_queries_with_empty_relevant": sum(1 for s in all_relevant if len(s) == 0),
                 }
             )
         prec_df = pd.DataFrame(summary)
         prec_df.to_csv(STAGE_RESULTS_DIR / "matching_precision_at_k.csv", index=False)
-        print("wrote matching_precision_at_k.csv (heuristic: category substring in jd text)")
+        print("wrote matching_precision_at_k.csv (heuristic: category + alias keyword matching)")
 
     print("wrote stage6_results/")
     print("stage 6 done")
@@ -113,6 +156,9 @@ def parse_args():
     p.add_argument("--sample-size", type=int, default=None)
     p.add_argument("--top-k", type=int, default=10)
     p.add_argument("--no-precision-eval", action="store_true")
+    p.add_argument("--no-category-rerank", action="store_true")
+    p.add_argument("--category-boost", type=float, default=0.20)
+    p.add_argument("--rerank-pool-size", type=int, default=300)
     return p.parse_args()
 
 
@@ -122,4 +168,7 @@ if __name__ == "__main__":
         sample_size=args.sample_size,
         top_k=args.top_k,
         eval_precision_k=not args.no_precision_eval,
+        category_rerank=not args.no_category_rerank,
+        category_boost=args.category_boost,
+        rerank_pool_size=args.rerank_pool_size,
     )
