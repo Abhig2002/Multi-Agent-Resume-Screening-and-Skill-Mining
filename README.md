@@ -98,5 +98,5 @@ We don’t have demographic labels on this dataset. We used stratified splits, b
 6. Sun et al., 2026 — CoMAI. arXiv:2603.16215.
 7. Buyreu Real, 2025 — bias / invisible signals. UPF.
 8. Castleman et al., 2026 — LLM resume validity. arXiv:2602.18550.
-9. Devic, 2025 — Apple PhD fellowship statement (trustworthy AI).
+9. Devic, 2025 — Apple PhD fellowship statement.
 10. Zhong et al., 2024 — AI and carbon. *Applied Economics*.
