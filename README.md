@@ -84,9 +84,6 @@ We don’t have demographic labels on this dataset. We used stratified splits, b
 | Ke | ARM, matching |
 | Everyone | Writeup and presentation |
 
-## Extra file
-
-`CSE 572 references.md` has our reading notes and links for related work (not needed to run code).
 
 ## References (short list)
 
