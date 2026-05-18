@@ -66,22 +66,19 @@ Stage 1 uses **NLTK** (stopwords + WordNet lemmatizer) only — no spaCy in prep
 
 **Matching P@K** is a *heuristic*: “relevant” means the resume’s `Category` matched something we inferred from the JD text. Check `matching_precision_at_k.csv` for mean P@5/P@10 and the “nonempty relevant” columns — see `matching_agent.py` if you need the exact logic.
 
-## Bias / fairness (course angle)
+## Bias / fairness 
 
 We don’t have demographic labels on this dataset. We used stratified splits, balanced weights where the classifier supports it, and we report macro-F1 plus per-class F1 / disparity across the 24 job categories. That’s not the same thing as proving fairness across people — we’re just being upfront about uneven performance across categories.
 
-## Who did what
 
-| Person | Main pieces |
-|--------|-------------|
-| Abhi | Preprocessing, skill extraction |
-| Tyler | Clustering, wiring `run_pipeline.py` |
-| Ishansh | Classification, metrics |
-| Ke | ARM, matching |
-| Everyone | Writeup and presentation |
+# Main Pipeline Components
+- Preprocessing, skill extraction
+- Clustering, wiring `run_pipeline.py` 
+- Classification, metrics 
+- ARM, matching 
 
 
-## References (short list)
+## References 
 
 1. Daryani et al., 2020 — NLP resume screening / similarity. *Topics in Intelligent Computing and Industry Design*.
 2. Bevara et al., 2025 — Resume2Vec. *Electronics*.
