@@ -1,9 +1,5 @@
 # CSE 572 — Group 23: Multi Agent Resume screening & Skill Mining pipeline
 
-Final project for **CSE 572 Data Mining** at ASU (Spring 2026).
-
-**Group:** Tyler Tannenbaum, Abhisekhar Bharadwaj Gandavarapu, Ishansh Sharma, Ke Chen
-
 ## What is this Project
 
 We built a pipeline that cleans resumes, pulls out skills with an LLM, makes SBERT embeddings, then runs a bunch of separate steps: clustering, association rules, classification into job category, and matching resumes to job descriptions. Each step lives in its own file under `agents/` and `run_pipeline.py` runs them.
