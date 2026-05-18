@@ -1,4 +1,4 @@
-# CSE 572 — Group 23: Resume screening & Skill Mining pipeline
+# CSE 572 — Group 23: Multi Agent Resume screening & Skill Mining pipeline
 
 Final project for **CSE 572 Data Mining** at ASU (Spring 2026).
 
