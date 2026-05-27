@@ -41,7 +41,7 @@ We don’t use a `notebooks/` folder; everything goes through the Python scripts
 
 Stage 1 uses **NLTK** (stopwords + WordNet lemmatizer) only — no spaCy in preprocessing.
 
-## Pipeline (short version)
+## Pipeline
 
 1. **Preprocess** → `clean_resumes.csv`, `clean_jds.csv`
 2. **Skills + SBERT** → `skill_lists.json`, `embeddings.npy` (MiniLM 384-d, same row order as `clean_resumes.csv`)
